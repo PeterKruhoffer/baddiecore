@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Baddiecore Product Decisions</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --ink: #17202a;
+      --muted: #5d6773;
+      --line: #d9dee5;
+      --accent: #1f6f8b;
+      --accent-soft: #e5f3f7;
+      --warning: #8a5d12;
+      --warning-soft: #fff4d7;
+      --success: #276749;
+      --success-soft: #e8f5ee;
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+    }
+
+    main,
+    .hero-inner {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .hero-inner {
+      padding: 48px 0 36px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.15;
+    }
+
+    h1 {
+      max-width: 820px;
+      margin: 0;
+      font-size: clamp(2.25rem, 4vw, 4.25rem);
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 780px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 1.1rem;
+    }
+
+    main {
+      padding: 32px 0 56px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .meta-card,
+    section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .meta-card {
+      padding: 18px;
+    }
+
+    .meta-card strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.9rem;
+    }
+
+    .meta-card span {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    section {
+      margin-top: 18px;
+      padding: 24px;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.45rem;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 1.05rem;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 1.2rem;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      background: #eef1f4;
+      border-radius: 4px;
+      padding: 0.12rem 0.32rem;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    .decision-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .decision {
+      border-left: 4px solid var(--accent);
+      padding: 12px 14px;
+      background: #fbfcfd;
+    }
+
+    .decision strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .workflow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .workflow span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #174e63;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .two-column {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-radius: var(--radius);
+    }
+
+    .callout.success {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .callout.warning {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .api-box {
+      margin-top: 12px;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: var(--radius);
+      background: #111827;
+      color: #f9fafb;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.9rem;
+      white-space: pre;
+    }
+
+    footer {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 0 0 40px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 780px) {
+      main,
+      .hero-inner,
+      footer {
+        width: min(100% - 28px, 1120px);
+      }
+
+      .hero-inner {
+        padding: 36px 0 28px;
+      }
+
+      .meta-grid,
+      .two-column {
+        grid-template-columns: 1fr;
+      }
+
+      section {
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero-inner">
+      <p class="eyebrow">Product Decision Record</p>
+      <h1>Baddiecore: Linux-first headless CMS inspired by self-hosted Sitecore</h1>
+      <p class="summary">
+        This document captures the current product direction for Baddiecore before implementation starts. It favors a focused
+        Sitecore-familiar MVP: content tree, visual page editing, YAML templates, draft/published states, workflow, and a REST layout API.
+      </p>
+    </div>
+  </header>
+
+  <main>
+    <div class="meta-grid" aria-label="Decision metadata">
+      <div class="meta-card">
+        <strong>Status</strong>
+        <span>Initial MVP direction</span>
+      </div>
+      <div class="meta-card">
+        <strong>Date</strong>
+        <span>2026-06-20</span>
+      </div>
+      <div class="meta-card">
+        <strong>Primary deployment target</strong>
+        <span>Linux containers and Linux servers</span>
+      </div>
+    </div>
+
+    <section>
+      <h2>Product Position</h2>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Baddiecore is a self-hosted, headless CMS built on modern .NET, intended to run cleanly on Linux.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The product should feel familiar to Sitecore developers and editors, but it does not need direct Sitecore compatibility.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The immediate goal is a working showcase and technical proof, not a commercial CMS product.
+        </div>
+      </div>
+      <div class="callout success">
+        Core thesis: prove that a Sitecore-like self-hosted headless CMS can be built with modern .NET and deployed on Linux.
+      </div>
+    </section>
+
+    <section>
+      <h2>MVP Scope</h2>
+      <div class="two-column">
+        <div>
+          <h3>Included</h3>
+          <ul>
+            <li>Corporate or marketing demo site.</li>
+            <li>Content tree explorer.</li>
+            <li>SolidJS/Vite CMS dashboard served by the ASP.NET Core host.</li>
+            <li>Visual page editor with iframe preview.</li>
+            <li>Field editing for pages and components.</li>
+            <li>Add, remove, and reorder page components without drag-and-drop in the first version.</li>
+            <li>Pages, text content, component content, and media such as images.</li>
+            <li>Draft and published states.</li>
+            <li>Publish history and basic version history.</li>
+            <li>Manual workflow approval before publishing.</li>
+            <li>Role-based permissions for admin, content-admin, and author users.</li>
+            <li>Controller-based ASP.NET Core API endpoints.</li>
+            <li>REST layout API for frontends.</li>
+            <li>YAML-defined templates owned by developers and synced into the CMS.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Deferred</h3>
+          <ul>
+            <li>Multilingual content.</li>
+            <li>Scheduled publishing.</li>
+            <li>Drag-and-drop page editing.</li>
+            <li>Search.</li>
+            <li>Personalization.</li>
+            <li>Analytics, campaigns, goals, A/B tests, and profile tracking.</li>
+            <li>Direct migration or API compatibility with Sitecore.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Application Shell</h2>
+      <p>
+        Baddiecore will use ASP.NET Core as the backend host and serve the CMS dashboard from the same application in production.
+        The dashboard itself should be a SolidJS app built with Vite.
+      </p>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Backend endpoints should use ASP.NET Core controllers rather than minimal API endpoints.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The CMS dashboard should be written as a SolidJS/Vite single page app.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          In production, the Vite build output can be emitted or copied into <code>wwwroot/cms</code> and served by the ASP.NET Core app.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          During local development, the SolidJS dev server can run separately and call the ASP.NET Core API through a proxy or configured API base URL.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Editing Experience</h2>
+      <p>
+        The first editor experience should be Sitecore-like, centered on a content tree and an Experience Editor-style page preview.
+        It should not attempt true inline editing in the MVP.
+      </p>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Editors select a page from the content tree, preview the real frontend page inside an iframe, and select page components from the preview.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Editing a selected component opens a side panel or menu containing the component fields, commonly text fields.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Editors can add, remove, and reorder components on a page, but drag-and-drop is outside the first version.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Iframe Preview</h2>
+      <p>
+        The CMS will use an iframe-based preview so the frontend remains bring-your-own. The CMS stores content and page layout;
+        the frontend owns rendering, styles, behavior, and responsive output.
+      </p>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          The CMS editor shell embeds the frontend preview URL inside an iframe.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Preview mode uses a token or similar access mechanism so the frontend can request draft content.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The iframe and CMS shell communicate via <code>postMessage</code> for component selection and editor actions.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Frontend components should expose stable rendering IDs, such as <code>data-baddie-rendering-id</code>, so clicks can map back to CMS data.
+        </div>
+      </div>
+      <div class="api-box">CMS Editor Shell
+  toolbar + workflow actions
+  content tree
+  iframe: https://frontend.local/preview?path=/about&amp;token=...
+  edit panel for selected rendering
+
+Frontend Preview
+  fetches draft layout data from Baddiecore
+  renders the real page
+  sends selected rendering ID to the CMS shell with postMessage</div>
+    </section>
+
+    <section>
+      <h2>Headless Layout API</h2>
+      <p>
+        The delivery contract should be REST-first and layout-oriented. The frontend asks for a page layout by path and mode,
+        then renders the returned placeholders, renderings, fields, media, and metadata.
+      </p>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Baddiecore should expose a REST layout API similar in spirit to Sitecore headless layout endpoints.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The first API shape can be path-based, with preview/draft access controlled separately.
+        </div>
+      </div>
+      <div class="api-box">GET /api/layout?path=/about&amp;mode=preview
+
+Response includes:
+  page fields
+  placeholders
+  renderings/components
+  component field values
+  media URLs
+  draft/published metadata
+  version information</div>
+    </section>
+
+    <section>
+      <h2>Templates And Renderings</h2>
+      <p>
+        Developers own template and rendering definitions. The CMS imports or syncs YAML definitions instead of treating the editor UI
+        as the source of truth for template structure.
+      </p>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Templates are represented as YAML files and stored in version control.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The CMS can import or sync those YAML definitions.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Editors create and modify content using templates, but do not change fundamental template structures in the MVP.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          A rendering is a named frontend component contract with editable fields, optional data source template, and allowed placeholders.
+        </div>
+      </div>
+      <div class="api-box">rendering:
+  name: Hero
+  componentKey: hero
+  datasourceTemplate: HeroContent
+  allowedPlaceholders:
+    - main</div>
+    </section>
+
+    <section>
+      <h2>Content Model</h2>
+      <div class="decision-list">
+        <div class="decision">
+          <strong>Decision</strong>
+          Baddiecore keeps a Sitecore-familiar content tree model for the MVP.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Content should support pages, component data, text fields, media items, and page composition data.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          The first demo should include common corporate site templates such as home page, standard page, article page, hero, rich text, CTA, image, and card grid.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Workflow And Publishing</h2>
+      <p>
+        The workflow is intentionally simple. Approval and publishing are separate actions so approved content is not automatically pushed live.
+      </p>
+      <div class="workflow" aria-label="Workflow states">
+        <span>Draft</span>
+        <span>Awaiting Approval</span>
+        <span>Approved</span>
+        <span>Published</span>
+      </div>
+      <div class="decision-list" style="margin-top: 18px;">
+        <div class="decision">
+          <strong>Decision</strong>
+          Authors can create and edit pages, then submit them for approval.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Content-admins can approve, reject, publish, and unlock content.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Admins can do everything, including developer-oriented and structural actions.
+        </div>
+        <div class="decision">
+          <strong>Decision</strong>
+          Publishing should preserve version history. The MVP can start with draft and published states plus history on publish.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Roles</h2>
+      <div class="two-column">
+        <div>
+          <h3>Admin</h3>
+          <p>Full access. Most likely developers or system owners. Can manage everything, including structural configuration.</p>
+          <h3>Content Admin</h3>
+          <p>Can manage most content operations, including approval, publishing, and locks. Cannot change templates or fundamental user role structures.</p>
+        </div>
+        <div>
+          <h3>Author</h3>
+          <p>Can create and edit pages, manage assigned content, and submit work for approval.</p>
+          <h3>Future Permissions</h3>
+          <p>More granular item-level permissions can be added after the first content workflow is proven.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <ul>
+        <li>Which database should be the first supported persistence target: MySQL, SQL Server, PostgreSQL, or another option?</li>
+        <li>Should the first demo frontend be React, Next.js, ASP.NET Core, or another stack?</li>
+        <li>How should YAML template sync handle removed fields, renamed fields, and existing content values?</li>
+        <li>What is the smallest useful media library for the first demo?</li>
+        <li>Should the first version use a single app with authoring and delivery modes, or split CM/CD processes later?</li>
+      </ul>
+      <div class="callout warning">
+        Architecture decisions are intentionally deferred until the product shape is stable enough to justify them.
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Baddiecore product decisions. This page is a living decision record and should be updated as product choices become implementation commitments.
+  </footer>
+</body>
+</html>

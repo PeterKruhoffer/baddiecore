@@ -1,0 +1,48 @@
+# .NET build output
+bin/
+obj/
+[Bb]uild/
+[Ll]og/
+
+# User-specific IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.rsuser
+*.suo
+
+# Local configuration
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+*.Development.local.json
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+.playwright-mcp/
+
+# Node, Vite, and package manager output
+node_modules/
+dist/
+.vite/
+.pnpm-store/
+*.tsbuildinfo
+cms-dashboard/vite.config.js
+cms-dashboard/vite.config.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Generated CMS dashboard assets. The Solid/Vite build can emit here for ASP.NET Core to serve.
+wwwroot/cms/*
+!wwwroot/cms/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db

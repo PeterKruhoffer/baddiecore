@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.1" />
+    <PackageReference Include="MySql.EntityFrameworkCore" Version="10.0.7" />
+    <PackageReference Include="Vogen" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Remove="cms-dashboard/**" />
+    <Content Remove="docs/**" />
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+    <None Remove="cms-dashboard/**" />
+    <None Remove="docs/**" />
+  </ItemGroup>
+
+</Project>

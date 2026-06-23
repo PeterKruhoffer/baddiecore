@@ -1,0 +1,26 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: baddiecore-mysql
+    environment:
+      MYSQL_DATABASE: baddiecore
+      MYSQL_USER: baddiecore
+      MYSQL_PASSWORD: baddiecore_dev_password
+      MYSQL_ROOT_PASSWORD: baddiecore_root_password
+    ports:
+      - "3307:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - baddiecore_mysql_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  baddiecore_mysql_data:

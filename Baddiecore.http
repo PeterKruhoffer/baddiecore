@@ -1,0 +1,31 @@
+@Baddiecore_HostAddress = http://localhost:5252
+
+GET {{Baddiecore_HostAddress}}/api/system/health
+Accept: application/json
+
+###
+
+GET {{Baddiecore_HostAddress}}/api/content/tree
+Accept: application/json
+
+###
+
+GET {{Baddiecore_HostAddress}}/api/layout?path=/&mode=preview
+Accept: application/json
+
+###
+
+GET {{Baddiecore_HostAddress}}/api/templates
+Accept: application/json
+
+###
+
+GET {{Baddiecore_HostAddress}}/api/renderings
+Accept: application/json
+
+###
+
+GET {{Baddiecore_HostAddress}}/api/workflow
+Accept: application/json
+
+###
