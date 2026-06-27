@@ -1,5 +1,11 @@
 namespace Baddiecore.Models;
 
+public sealed class GetLayoutRequest
+{
+    public string Path { get; init; } = "/";
+    public string Mode { get; init; } = "preview";
+}
+
 public sealed record ContentTreeResponse(IReadOnlyList<ContentTreeNodeResponse> Items);
 
 public sealed record ContentTreeNodeResponse(

@@ -1,34 +1,35 @@
 using Baddiecore.Features.Cms;
 using Baddiecore.Models;
+using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Baddiecore.Controllers;
 
 [ApiController]
 [Route("api/layout")]
-public sealed class LayoutController(ICmsQueries cmsQueries) : ControllerBase
+public sealed class LayoutController(
+    ICmsQueries cmsQueries,
+    IValidator<GetLayoutRequest> validator) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<LayoutResponse>> GetLayout(
-        [FromQuery] string path = "/",
-        [FromQuery] string mode = "preview",
+        [FromQuery] GetLayoutRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (!CmsLayoutModes.IsKnown(mode))
+        var validationResult = await validator.ValidateAsync(request, cancellationToken);
+
+        if (!validationResult.IsValid)
         {
-            return BadRequest(new
-            {
-                Message = "Layout mode must be either 'preview' or 'published'."
-            });
+            return ValidationProblem(new ValidationProblemDetails(validationResult.ToDictionary()));
         }
 
-        var layout = await cmsQueries.GetLayoutAsync(path, mode, cancellationToken);
+        var layout = await cmsQueries.GetLayoutAsync(request.Path, request.Mode, cancellationToken);
 
         if (layout is null)
         {
             return NotFound(new
             {
-                Message = $"No layout exists for path '{path}'."
+                Message = $"No layout exists for path '{request.Path}'."
             });
         }
 

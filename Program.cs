@@ -1,5 +1,6 @@
 using Baddiecore.Data;
 using Baddiecore.Features.Cms;
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.StaticFiles;
 using MySql.EntityFrameworkCore.Extensions;
@@ -8,6 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.AddValidatorsFromAssemblyContaining<GetLayoutRequestValidator>();
 builder.Services.AddDbContext<BaddiecoreDbContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("Baddiecore")
