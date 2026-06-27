@@ -3,11 +3,13 @@
 FROM node:24-alpine AS cms-dashboard-build
 WORKDIR /src/cms-dashboard
 
-COPY cms-dashboard/package.json cms-dashboard/package-lock.json ./
-RUN npm ci
+RUN corepack enable
+
+COPY cms-dashboard/package.json cms-dashboard/pnpm-lock.yaml cms-dashboard/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY cms-dashboard/ ./
-RUN npm run build
+RUN pnpm run build
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 WORKDIR /src

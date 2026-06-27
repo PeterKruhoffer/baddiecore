@@ -1,0 +1,7 @@
+blockExoticSubdeps: true
+minimumReleaseAge: 4320
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  # Legacy Babel dependency that predates modern npm provenance attestations.
+  - semver@6.3.1
