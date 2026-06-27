@@ -196,6 +196,7 @@ public sealed class DatabaseCmsQueries(BaddiecoreDbContext dbContext) : ICmsQuer
             renderingDefinition?.Name ?? string.Empty,
             renderingDefinition?.ComponentKey ?? string.Empty,
             pageRendering.DatasourceItemId?.Value.ToString("D") ?? string.Empty,
+            pageRendering.DatasourceItem?.Version ?? 0,
             renderingDefinition?.EditableFields
                 .OrderBy(field => field.SortOrder)
                 .ThenBy(field => field.Name)
@@ -203,6 +204,7 @@ public sealed class DatabaseCmsQueries(BaddiecoreDbContext dbContext) : ICmsQuer
                     field.FieldKey,
                     field.Name,
                     field.FieldType,
+                    field.IsRequired,
                     datasourceValues.GetValueOrDefault(field.FieldKey, string.Empty)))
                 .ToList()
                 ?? []);

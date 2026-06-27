@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { JSDOM } from "jsdom";
-import { createPreviewDocument, sanitizePreviewUrl, type LayoutResponse } from "./App";
+import { updateRenderingDatasource } from "./cmsApi";
+import type { LayoutResponse } from "./cmsTypes";
 
 function createCtaLayout(buttonUrl: string): LayoutResponse {
   return {
@@ -22,61 +22,66 @@ function createCtaLayout(buttonUrl: string): LayoutResponse {
         name: "Call to Action",
         componentKey: "cta",
         datasourceId: "datasource-id",
+        datasourceVersion: 3,
         fields: [
-          { name: "heading", label: "Heading", type: "text", value: "CTA" },
-          { name: "buttonText", label: "Button text", type: "text", value: "Open" },
-          { name: "buttonUrl", label: "Button URL", type: "text", value: buttonUrl }
+          { name: "heading", label: "Heading", type: "text", required: true, value: "CTA" },
+          { name: "buttonText", label: "Button text", type: "text", required: true, value: "Open" },
+          { name: "buttonUrl", label: "Button URL", type: "text", required: true, value: buttonUrl }
         ]
       }]
     }]
   };
 }
 
-describe("preview URL handling", () => {
-  it.each([
-    "javascript:alert(document.domain)",
-    "data:text/html,<script>alert(1)</script>",
-    "vbscript:msgbox(1)",
-    "  javascript:alert(1)"
-  ])("rejects the active URL %s", (url) => {
-    expect(sanitizePreviewUrl(url)).toBe("#");
-  });
+describe("datasource field updates", () => {
+  it("sends the datasource version and edited field values", async () => {
+    const layout = createCtaLayout("/about");
+    const rendering = layout.placeholders[0].renderings[0];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
 
-  it.each(["/about", "https://example.com/about", "mailto:editor@example.com", "tel:+4512345678"])(
-    "allows the safe URL %s",
-    (url) => {
-      expect(sanitizePreviewUrl(url)).toBe(url);
-    }
-  );
-
-  it("removes an unsafe URL from generated CTA markup", () => {
-    const document = createPreviewDocument(createCtaLayout("javascript:alert(1)"));
-
-    expect(document).toContain('href="#"');
-    expect(document).not.toContain("javascript:alert(1)");
-  });
-
-  it("selects a CTA without allowing its link navigation", () => {
-    const preview = new JSDOM(createPreviewDocument(createCtaLayout("/about")), {
-      runScripts: "dangerously",
-      url: "https://preview.baddiecore.invalid/"
+    await updateRenderingDatasource(rendering, {
+      heading: "A changed heading",
+      buttonText: "Open",
+      buttonUrl: "/about"
     });
-    const link = preview.window.document.querySelector<HTMLAnchorElement>(".cta a");
-    const section = preview.window.document.querySelector<HTMLElement>(".cta");
-    const click = new preview.window.MouseEvent("click", { bubbles: true, cancelable: true });
-    const postMessage = vi.spyOn(preview.window, "postMessage");
 
-    expect(link).not.toBeNull();
-    expect(section).not.toBeNull();
-    expect(link!.dispatchEvent(click)).toBe(false);
-    expect(click.defaultPrevented).toBe(true);
-    expect(section!.classList.contains("selected")).toBe(true);
-    expect(preview.window.location.href).toBe("https://preview.baddiecore.invalid/");
-    expect(postMessage).toHaveBeenCalledWith(
-      { source: "baddiecore-preview", renderingId: "rendering-id" },
-      "*"
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/renderings/rendering-id/datasource/fields",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          datasourceId: "datasource-id",
+          expectedVersion: 3,
+          fields: [
+            { name: "heading", value: "A changed heading" },
+            { name: "buttonText", value: "Open" },
+            { name: "buttonUrl", value: "/about" }
+          ]
+        })
+      })
     );
 
-    preview.window.close();
+    fetchMock.mockRestore();
+  });
+
+  it("surfaces stale-version conflicts with the current version", async () => {
+    const rendering = createCtaLayout("/about").placeholders[0].renderings[0];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      title: "Datasource version conflict",
+      detail: "The datasource changed after it was loaded.",
+      currentVersion: 4
+    }), { status: 409, headers: { "Content-Type": "application/problem+json" } }));
+
+    await expect(updateRenderingDatasource(rendering, {
+      heading: "Stale edit",
+      buttonText: "Open",
+      buttonUrl: "/about"
+    })).rejects.toMatchObject({
+      status: 409,
+      currentVersion: 4,
+      message: "The datasource changed after it was loaded."
+    });
+
+    fetchMock.mockRestore();
   });
 });

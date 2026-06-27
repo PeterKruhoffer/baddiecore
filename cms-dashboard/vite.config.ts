@@ -1,9 +1,12 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import solid from "vite-plugin-solid";
 
 export default defineConfig({
   base: "/cms/",
   plugins: [solid()],
+  test: {
+    environment: "jsdom"
+  },
   server: {
     port: 5173,
     proxy: {

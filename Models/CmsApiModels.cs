@@ -1,3 +1,5 @@
+using Baddiecore.Data.Ids;
+
 namespace Baddiecore.Models;
 
 public sealed class GetLayoutRequest
@@ -40,13 +42,28 @@ public sealed record RenderingInstanceResponse(
     string Name,
     string ComponentKey,
     string DatasourceId,
+    int DatasourceVersion,
     IReadOnlyList<FieldValueResponse> Fields);
 
 public sealed record FieldValueResponse(
     string Name,
     string Label,
     string Type,
+    bool Required,
     string Value);
+
+public sealed class UpdateRenderingDatasourceRequest
+{
+    public ContentItemId DatasourceId { get; init; } = null!;
+    public int ExpectedVersion { get; init; }
+    public IReadOnlyList<UpdateFieldValueRequest> Fields { get; init; } = [];
+}
+
+public sealed class UpdateFieldValueRequest
+{
+    public string Name { get; init; } = string.Empty;
+    public string? Value { get; init; }
+}
 
 public sealed record TemplateCatalogResponse(IReadOnlyList<TemplateDefinitionResponse> Templates);
 

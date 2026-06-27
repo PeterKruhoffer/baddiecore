@@ -14,6 +14,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Baddiecore.Tests/**" />
+    <Content Remove="Baddiecore.Tests/**" />
+    <None Remove="Baddiecore.Tests/**" />
     <Content Remove="cms-dashboard/**" />
     <Content Remove="docs/**" />
     <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />

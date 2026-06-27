@@ -18,6 +18,7 @@ builder.Services.AddDbContext<BaddiecoreDbContext>(options =>
     options.UseMySQL(connectionString);
 });
 builder.Services.AddScoped<ICmsQueries, DatabaseCmsQueries>();
+builder.Services.AddScoped<IRenderingDatasourceWriter, DatabaseRenderingDatasourceWriter>();
 
 var app = builder.Build();
 
@@ -30,7 +31,14 @@ app.UseHttpsRedirection();
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
-    ContentTypeProvider = new FileExtensionContentTypeProvider()
+    ContentTypeProvider = new FileExtensionContentTypeProvider(),
+    OnPrepareResponse = context =>
+    {
+        if (context.Context.Request.Path.StartsWithSegments("/cms/assets"))
+        {
+            context.Context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+        }
+    }
 });
 
 app.MapControllers();
@@ -38,3 +46,5 @@ app.MapControllers();
 app.MapFallbackToFile("/cms/{*path:nonfile}", "cms/index.html");
 
 app.Run();
+
+public partial class Program;

@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="Baddiecore.csproj" />
+  <Project Path="Baddiecore.Tests/Baddiecore.Tests.csproj" />
 </Solution>
