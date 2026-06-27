@@ -72,7 +72,7 @@ public sealed class DatabaseCmsQueries(BaddiecoreDbContext dbContext) : ICmsQuer
             page.Path,
             normalizedMode,
             new PageMetadataResponse(
-                page.Id.Value,
+                page.Id.Value.ToString("D"),
                 page.Name,
                 page.Template?.TemplateKey ?? string.Empty,
                 page.WorkflowState?.Name ?? string.Empty,
@@ -175,7 +175,7 @@ public sealed class DatabaseCmsQueries(BaddiecoreDbContext dbContext) : ICmsQuer
         return items
             .Where(item => item.ParentId == parentId)
             .Select(item => new ContentTreeNodeResponse(
-                item.Id.Value,
+                item.Id.Value.ToString("D"),
                 item.Name,
                 item.Path,
                 item.Template?.TemplateKey ?? string.Empty,
@@ -192,10 +192,10 @@ public sealed class DatabaseCmsQueries(BaddiecoreDbContext dbContext) : ICmsQuer
             ?? [];
 
         return new RenderingInstanceResponse(
-            pageRendering.Id.Value,
+            pageRendering.Id.Value.ToString("D"),
             renderingDefinition?.Name ?? string.Empty,
             renderingDefinition?.ComponentKey ?? string.Empty,
-            pageRendering.DatasourceItemId?.Value ?? string.Empty,
+            pageRendering.DatasourceItemId?.Value.ToString("D") ?? string.Empty,
             renderingDefinition?.EditableFields
                 .OrderBy(field => field.SortOrder)
                 .ThenBy(field => field.Name)
