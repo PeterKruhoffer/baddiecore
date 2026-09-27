@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dotnet_root="$HOME/.dotnet"
+local_bin="$HOME/.local/bin"
+pnpm_root="$HOME/.local/share/baddiecore-pnpm"
+
+step() {
+  local label="$1"
+  shift
+  printf '\n==> %s\n' "$label"
+  time "$@"
+}
+
+mkdir -p "$dotnet_root" "$local_bin" "$pnpm_root"
+
+export DOTNET_ROOT="$dotnet_root"
+export PATH="$local_bin:$dotnet_root:$PATH"
+
+local_tools_marker="# baddiecore local tools"
+if ! grep -Fqx "$local_tools_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# baddiecore local tools
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+EOF
+fi
+
+dotnet_marker="# baddiecore .NET SDK"
+if ! grep -Fqx "$dotnet_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# baddiecore .NET SDK
+export DOTNET_ROOT="$HOME/.dotnet"
+case ":$PATH:" in
+  *":$DOTNET_ROOT:"*) ;;
+  *) export PATH="$DOTNET_ROOT:$PATH" ;;
+esac
+EOF
+fi
+
+if [[ ! -x "$dotnet_root/dotnet" ]] || ! "$dotnet_root/dotnet" --list-sdks | grep -q '^10\.'; then
+  installer="$HOME/.cache/amp/dotnet-install.sh"
+  mkdir -p "$(dirname "$installer")"
+  if [[ ! -f "$installer" ]]; then
+    step "Download the .NET installer" \
+      curl --fail --location --silent --show-error \
+        https://dot.net/v1/dotnet-install.sh \
+        --output "$installer"
+  fi
+  step "Install the .NET 10 SDK" \
+    bash "$installer" --channel 10.0 --quality GA --install-dir "$dotnet_root" --no-path
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Baddiecore requires Node.js 24 or newer; the Amp orb base image should provide it." >&2
+  exit 1
+fi
+node_version="$(node --version)"
+node_major="${node_version#v}"
+node_major="${node_major%%.*}"
+if (( node_major < 24 )); then
+  echo "Baddiecore requires Node.js 24 or newer; found $node_version." >&2
+  exit 1
+fi
+
+if [[ ! -x "$local_bin/pnpm" ]] || [[ "$("$local_bin/pnpm" --version)" != "11.9.0" ]]; then
+  step "Install pnpm 11.9.0" \
+    npm install --prefix "$pnpm_root" --no-audit --no-fund --loglevel=error pnpm@11.9.0
+  ln -sfn "$pnpm_root/node_modules/.bin/pnpm" "$local_bin/pnpm"
+fi
+
+step "Restore .NET dependencies" dotnet restore "$repo_root/Baddiecore.slnx"
+step "Restore dashboard dependencies" \
+  pnpm --dir "$repo_root/cms-dashboard" install --frozen-lockfile
+
+printf '\nOrb setup complete: .NET %s, Node %s, pnpm %s\n' \
+  "$(dotnet --version)" "$(node --version)" "$(pnpm --version)"

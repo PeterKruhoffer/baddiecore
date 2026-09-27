@@ -39,6 +39,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Amp orb runtime state
+.amp/portals/*
+
 # Generated CMS dashboard assets. The Solid/Vite build can emit here for ASP.NET Core to serve.
 wwwroot/cms/*
 !wwwroot/cms/.gitkeep
