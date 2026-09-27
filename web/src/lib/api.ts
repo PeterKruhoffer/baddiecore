@@ -1,10 +1,4 @@
-import type {
-  Bootstrap,
-  ComponentDef,
-  Content,
-  Page,
-  Template,
-} from "../types";
+import type { Bootstrap, ComponentDef, Content, Page, Template } from "../types";
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -36,8 +30,7 @@ export const api = {
     }),
   logout: () => request<void>("/api/logout", { method: "POST" }),
   bootstrap: () => request<Bootstrap>("/api/admin/bootstrap"),
-  content: (slug: string) =>
-    request<Content>(`/api/content?slug=${encodeURIComponent(slug)}`),
+  content: (slug: string) => request<Content>(`/api/content?slug=${encodeURIComponent(slug)}`),
   createPage: (value: Pick<Page, "title" | "slug" | "template_id">) =>
     request<Page>("/api/admin/pages", {
       method: "POST",
@@ -53,8 +46,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision: page.revision }),
     }),
-  deletePage: (id: string) =>
-    request<void>(`/api/admin/pages/${id}`, { method: "DELETE" }),
+  deletePage: (id: string) => request<void>(`/api/admin/pages/${id}`, { method: "DELETE" }),
   createTemplate: (value: Omit<Template, "id">) =>
     request<Template>("/api/admin/templates", {
       method: "POST",

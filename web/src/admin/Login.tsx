@@ -1,5 +1,24 @@
 import { createSignal } from "solid-js";
+import * as stylex from "@stylexjs/stylex";
 import { api } from "../lib/api";
+import { common } from "../common.stylex";
+const styles = stylex.create({
+  login: {
+    height: "100vh",
+    display: "grid",
+    placeItems: "center",
+    backgroundColor: "#fffdf8",
+    backgroundImage: "radial-gradient(circle at 70% 20%, #e6dcf7, transparent 35%)",
+  },
+  card: {
+    width: "min(390px, 90vw)",
+    padding: 38,
+    backgroundColor: "#fffdfbcc",
+    borderRadius: 16,
+  },
+  heading: { font: "600 40px Georgia, serif" },
+  full: { width: "100%" },
+});
 export function Login(p: { onSuccess: () => void }) {
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal("");
@@ -18,15 +37,16 @@ export function Login(p: { onSuccess: () => void }) {
     }
   }
   return (
-    <main class="login">
-      <form class="login-card" onSubmit={submit}>
-        <span class="brand-mark">B</span>
-        <p class="eyebrow">Baddiecore</p>
-        <h1>Welcome back.</h1>
-        <p class="muted">Sign in to shape your site.</p>
-        <label>
+    <main {...stylex.attrs(styles.login)}>
+      <form {...stylex.attrs(styles.card)} onSubmit={submit}>
+        <span {...stylex.attrs(common.brandMark)}>B</span>
+        <p {...stylex.attrs(common.eyebrow)}>Baddiecore</p>
+        <h1 {...stylex.attrs(styles.heading)}>Welcome back.</h1>
+        <p {...stylex.attrs(common.muted)}>Sign in to shape your site.</p>
+        <label {...stylex.attrs(common.label)}>
           Password
           <input
+            {...stylex.attrs(common.control)}
             autofocus
             type="password"
             required
@@ -35,11 +55,11 @@ export function Login(p: { onSuccess: () => void }) {
           />
         </label>
         {error() && (
-          <p class="error" role="alert">
+          <p {...stylex.attrs(common.error)} role="alert">
             {error()}
           </p>
         )}
-        <button class="primary" disabled={busy()}>
+        <button {...stylex.attrs(common.button, common.primary, styles.full)} disabled={busy()}>
           {busy() ? "Signing in…" : "Enter workspace"}
         </button>
       </form>

@@ -1,0 +1,76 @@
+import * as stylex from "@stylexjs/stylex";
+
+const colors = {
+  paper: "#fffdf8",
+  line: "#ddd6cb",
+  violet: "#6650a5",
+  soft: "#eee9fa",
+  muted: "#77716a",
+};
+
+export const common = stylex.create({
+  button: {
+    font: "inherit",
+    color: "inherit",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.line,
+    backgroundColor: colors.paper,
+    borderRadius: 8,
+    padding: "9px 13px",
+    cursor: "pointer",
+  },
+  primary: {
+    backgroundColor: colors.violet,
+    color: "#fff",
+    borderColor: colors.violet,
+    textDecoration: "none",
+  },
+  eyebrow: {
+    textTransform: "uppercase",
+    letterSpacing: "0.13em",
+    fontSize: 11,
+    fontWeight: 600,
+    color: colors.violet,
+    margin: "0 0 7px",
+  },
+  muted: { color: colors.muted },
+  error: {
+    color: "#92352f",
+    backgroundColor: "#fff0ee",
+    padding: 10,
+    borderRadius: 7,
+  },
+  brandMark: {
+    width: 32,
+    height: 32,
+    display: "grid",
+    placeItems: "center",
+    borderRadius: 9,
+    backgroundColor: colors.violet,
+    color: "#fff",
+    font: "600 20px Georgia, serif",
+  },
+  label: {
+    display: "grid",
+    gap: 6,
+    fontSize: 12,
+    fontWeight: 600,
+    margin: "12px 0",
+  },
+  control: {
+    font: "inherit",
+    color: "inherit",
+    width: "100%",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderRadius: 7,
+    backgroundColor: "#fff",
+    padding: 10,
+    outlineStyle: "none",
+    borderColor: { default: colors.line, ":focus": colors.violet },
+    boxShadow: { default: null, ":focus": `0 0 0 3px ${colors.soft}` },
+  },
+  textarea: { minHeight: 110 },
+  danger: { color: "#9a3c3c", backgroundColor: "transparent", borderWidth: 0 },
+});

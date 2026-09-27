@@ -6,6 +6,9 @@ if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
 fi
 source "$HOME/.cargo/env"
 cargo fetch --locked
-npm --prefix web ci
-npm --prefix web run build
+if ! command -v pnpm >/dev/null 2>&1; then
+  npm install --global pnpm@12.6.0
+fi
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web run build
 cargo build --locked

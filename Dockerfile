@@ -1,9 +1,10 @@
 FROM node:24-bookworm-slim AS web
 WORKDIR /build/web
-COPY web/package*.json ./
-RUN npm ci
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY web/ ./
-RUN npm run build
+RUN pnpm run build
 
 FROM rust:1.98-bookworm AS backend
 WORKDIR /build

@@ -4,8 +4,10 @@ import { AdminApp } from "./admin/AdminApp";
 import { PublicPage } from "./PublicPage";
 render(
   () =>
-    location.pathname === "/admin" || location.pathname.startsWith("/admin/")
-      ? <AdminApp />
-      : <PublicPage />,
+    location.pathname === "/admin" || location.pathname.startsWith("/admin/") ? (
+      <AdminApp />
+    ) : (
+      <PublicPage />
+    ),
   document.getElementById("root")!,
 );

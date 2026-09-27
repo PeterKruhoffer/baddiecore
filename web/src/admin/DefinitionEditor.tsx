@@ -1,12 +1,75 @@
 import { createSignal, For, Show } from "solid-js";
-import type {
-  ComponentDef,
-  Field,
-  FieldKind,
-  Region,
-  RendererName,
-  Template,
-} from "../types";
+import * as stylex from "@stylexjs/stylex";
+import type { ComponentDef, Field, FieldKind, Region, RendererName, Template } from "../types";
+import { common } from "../common.stylex";
+const styles = stylex.create({
+  definition: {
+    padding: { default: "42px 48px", "@media (max-width: 720px)": "25px 16px" },
+    maxWidth: 1200,
+    margin: "auto",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 30,
+  },
+  heading: { font: "600 42px Georgia, serif", margin: 0 },
+  layout: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "240px 1fr",
+      "@media (max-width: 720px)": "1fr",
+    },
+    gap: 20,
+  },
+  list: { display: "grid", alignContent: "start", gap: 7 },
+  listButton: { textAlign: "left", display: "grid" },
+  active: { backgroundColor: "#eee9fa" },
+  small: { color: "#77716a" },
+  panel: {
+    backgroundColor: "#fffdf8",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#ddd6cb",
+    borderRadius: 12,
+    padding: 24,
+  },
+  row: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "1fr 1fr",
+      "@media (max-width: 720px)": "1fr",
+    },
+    gap: 12,
+  },
+  footer: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 22,
+  },
+  fieldset: {
+    borderWidth: 0,
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "#ddd6cb",
+    marginTop: 25,
+  },
+  legend: { font: "600 19px Georgia, serif" },
+  rule: { backgroundColor: "#f5f1ea", borderRadius: 9, padding: 13, margin: 9 },
+  checks: { display: "flex", flexWrap: "wrap", gap: "4px 16px" },
+  check: { display: "flex", alignItems: "center", gap: 6 },
+  autoWidth: { width: "auto" },
+  fieldGrid: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "1fr 1fr 130px 90px auto",
+      "@media (max-width: 720px)": "1fr",
+    },
+    alignItems: "end",
+    gap: 9,
+  },
+});
 type Props = {
   kind: "templates" | "components";
   templates: Template[];
@@ -71,43 +134,53 @@ export function DefinitionEditor(p: Props) {
     }
   }
   return (
-    <section class="definition">
-      <header>
+    <section {...stylex.attrs(styles.definition)}>
+      <header {...stylex.attrs(styles.header)}>
         <div>
-          <p class="eyebrow">Site model</p>
-          <h1>{p.kind === "templates" ? "Templates" : "Components"}</h1>
+          <p {...stylex.attrs(common.eyebrow)}>Site model</p>
+          <h1 {...stylex.attrs(styles.heading)}>
+            {p.kind === "templates" ? "Templates" : "Components"}
+          </h1>
         </div>
-        <button onClick={() => choose("")}>
+        <button {...stylex.attrs(common.button)} onClick={() => choose("")}>
           New {p.kind === "templates" ? "template" : "component"}
         </button>
       </header>
-      <div class="definition-layout">
-        <nav class="definition-list">
+      <div {...stylex.attrs(styles.layout)}>
+        <nav {...stylex.attrs(styles.list)}>
           <For each={list()}>
             {(item) => (
               <button
-                class={selected() === item.id ? "active" : ""}
+                {...stylex.attrs(
+                  common.button,
+                  styles.listButton,
+                  selected() === item.id && styles.active,
+                )}
                 onClick={() => choose(item.id)}
               >
                 <strong>{item.name}</strong>
-                <small>{item.description || "No description"}</small>
+                <small {...stylex.attrs(styles.small)}>
+                  {item.description || "No description"}
+                </small>
               </button>
             )}
           </For>
         </nav>
-        <form class="form-panel" onSubmit={submit}>
-          <div class="field-row">
-            <label>
+        <form {...stylex.attrs(styles.panel)} onSubmit={submit}>
+          <div {...stylex.attrs(styles.row)}>
+            <label {...stylex.attrs(common.label)}>
               Name
               <input
+                {...stylex.attrs(common.control)}
                 required
                 value={draft().name}
                 onInput={(e) => patch({ name: e.currentTarget.value })}
               />
             </label>
-            <label>
+            <label {...stylex.attrs(common.label)}>
               Description
               <input
+                {...stylex.attrs(common.control)}
                 value={draft().description}
                 onInput={(e) => patch({ description: e.currentTarget.value })}
               />
@@ -115,12 +188,7 @@ export function DefinitionEditor(p: Props) {
           </div>
           <Show
             when={p.kind === "templates"}
-            fallback={
-              <ComponentFields
-                value={draft() as ComponentDef}
-                onChange={change}
-              />
-            }
+            fallback={<ComponentFields value={draft() as ComponentDef} onChange={change} />}
           >
             {
               <TemplateRegions
@@ -131,18 +199,13 @@ export function DefinitionEditor(p: Props) {
             }
           </Show>
           {error() && (
-            <p class="error" role="alert">
+            <p {...stylex.attrs(common.error)} role="alert">
               {error()}
             </p>
           )}
-          <footer>
-            <button class="primary">
-              Save{" "}
-              {selected()
-                ? "changes"
-                : p.kind === "templates"
-                  ? "template"
-                  : "component"}
+          <footer {...stylex.attrs(styles.footer)}>
+            <button {...stylex.attrs(common.button, common.primary)}>
+              Save {selected() ? "changes" : p.kind === "templates" ? "template" : "component"}
             </button>
           </footer>
         </form>
@@ -159,18 +222,19 @@ function TemplateRegions(p: {
     p.onChange({ ...p.value, regions });
   }
   return (
-    <fieldset>
-      <legend>Regions</legend>
+    <fieldset {...stylex.attrs(styles.fieldset)}>
+      <legend {...stylex.attrs(styles.legend)}>Regions</legend>
       <For each={p.value.regions.map((_, index) => index)}>
         {(index) => {
           const i = () => index;
           const region = () => p.value.regions[index];
           return (
-            <div class="rule-card">
-              <div class="field-row">
-                <label>
+            <div {...stylex.attrs(styles.rule)}>
+              <div {...stylex.attrs(styles.row)}>
+                <label {...stylex.attrs(common.label)}>
                   Region name
                   <input
+                    {...stylex.attrs(common.control)}
                     required
                     value={region().name}
                     onInput={(e) =>
@@ -182,9 +246,10 @@ function TemplateRegions(p: {
                     }
                   />
                 </label>
-                <label>
+                <label {...stylex.attrs(common.label)}>
                   Maximum
                   <input
+                    {...stylex.attrs(common.control)}
                     required
                     min="1"
                     type="number"
@@ -204,12 +269,13 @@ function TemplateRegions(p: {
                   />
                 </label>
               </div>
-              <span class="label">Allowed components</span>
-              <div class="checks">
+              <span {...stylex.attrs(common.label)}>Allowed components</span>
+              <div {...stylex.attrs(styles.checks)}>
                 <For each={p.components}>
                   {(c) => (
-                    <label>
+                    <label {...stylex.attrs(common.label, styles.check)}>
                       <input
+                        {...stylex.attrs(common.control, styles.autoWidth)}
                         type="checkbox"
                         checked={region().allowed_components.includes(c.id)}
                         onChange={(e) =>
@@ -220,9 +286,7 @@ function TemplateRegions(p: {
                                     ...r,
                                     allowed_components: e.currentTarget.checked
                                       ? [...r.allowed_components, c.id]
-                                      : r.allowed_components.filter(
-                                          (id) => id !== c.id,
-                                        ),
+                                      : r.allowed_components.filter((id) => id !== c.id),
                                   }
                                 : r,
                             ),
@@ -236,7 +300,7 @@ function TemplateRegions(p: {
               </div>
               <button
                 type="button"
-                class="danger-link"
+                {...stylex.attrs(common.button, common.danger)}
                 onClick={() => set(p.value.regions.filter((_, n) => n !== i()))}
               >
                 Remove region
@@ -246,6 +310,7 @@ function TemplateRegions(p: {
         }}
       </For>
       <button
+        {...stylex.attrs(common.button)}
         type="button"
         onClick={() =>
           set([
@@ -263,18 +328,16 @@ function TemplateRegions(p: {
     </fieldset>
   );
 }
-function ComponentFields(p: {
-  value: ComponentDef;
-  onChange: (v: ComponentDef) => void;
-}) {
+function ComponentFields(p: { value: ComponentDef; onChange: (v: ComponentDef) => void }) {
   function set(fields: Field[]) {
     p.onChange({ ...p.value, fields });
   }
   return (
     <>
-      <label>
+      <label {...stylex.attrs(common.label)}>
         Renderer
         <select
+          {...stylex.attrs(common.control)}
           value={p.value.renderer}
           onChange={(e) =>
             p.onChange({
@@ -288,17 +351,18 @@ function ComponentFields(p: {
           </For>
         </select>
       </label>
-      <fieldset>
-        <legend>Fields</legend>
+      <fieldset {...stylex.attrs(styles.fieldset)}>
+        <legend {...stylex.attrs(styles.legend)}>Fields</legend>
         <For each={p.value.fields.map((_, index) => index)}>
           {(index) => {
             const i = () => index;
             const field = () => p.value.fields[index];
             return (
-              <div class="rule-card field-grid">
-                <label>
+              <div {...stylex.attrs(styles.rule, styles.fieldGrid)}>
+                <label {...stylex.attrs(common.label)}>
                   Key
                   <input
+                    {...stylex.attrs(common.control)}
                     required
                     pattern="[a-z][a-z0-9_]*"
                     value={field().name}
@@ -311,32 +375,30 @@ function ComponentFields(p: {
                     }
                   />
                 </label>
-                <label>
+                <label {...stylex.attrs(common.label)}>
                   Label
                   <input
+                    {...stylex.attrs(common.control)}
                     required
                     value={field().label}
                     onInput={(e) =>
                       set(
                         p.value.fields.map((f, n) =>
-                          n === i()
-                            ? { ...f, label: e.currentTarget.value }
-                            : f,
+                          n === i() ? { ...f, label: e.currentTarget.value } : f,
                         ),
                       )
                     }
                   />
                 </label>
-                <label>
+                <label {...stylex.attrs(common.label)}>
                   Type
                   <select
+                    {...stylex.attrs(common.control)}
                     value={field().kind}
                     onChange={(e) =>
                       set(
                         p.value.fields.map((f, n) =>
-                          n === i()
-                            ? { ...f, kind: e.currentTarget.value as FieldKind }
-                            : f,
+                          n === i() ? { ...f, kind: e.currentTarget.value as FieldKind } : f,
                         ),
                       )
                     }
@@ -346,16 +408,15 @@ function ComponentFields(p: {
                     <option>url</option>
                   </select>
                 </label>
-                <label class="check">
+                <label {...stylex.attrs(common.label, styles.check)}>
                   <input
+                    {...stylex.attrs(common.control, styles.autoWidth)}
                     type="checkbox"
                     checked={field().required}
                     onChange={(e) =>
                       set(
                         p.value.fields.map((f, n) =>
-                          n === i()
-                            ? { ...f, required: e.currentTarget.checked }
-                            : f,
+                          n === i() ? { ...f, required: e.currentTarget.checked } : f,
                         ),
                       )
                     }
@@ -364,10 +425,8 @@ function ComponentFields(p: {
                 </label>
                 <button
                   type="button"
-                  class="danger-link"
-                  onClick={() =>
-                    set(p.value.fields.filter((_, n) => n !== i()))
-                  }
+                  {...stylex.attrs(common.button, common.danger)}
+                  onClick={() => set(p.value.fields.filter((_, n) => n !== i()))}
                 >
                   Remove
                 </button>
@@ -376,6 +435,7 @@ function ComponentFields(p: {
           }}
         </For>
         <button
+          {...stylex.attrs(common.button)}
           type="button"
           onClick={() =>
             set([

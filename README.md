@@ -1,6 +1,6 @@
 # Baddiecore
 
-A self-hosted CMS with a Rust/Axum server, SQLite storage, and a Solid 2 editor. This is an early first version, not a Sitecore replacement.
+A self-hosted CMS with a Rust/Axum server, SQLite storage, and a Solid 2 editor styled with StyleX. The frontend uses Vite+ and pnpm. This is an early first version, not a Sitecore replacement.
 
 ## Run in a Linux container
 
@@ -27,26 +27,29 @@ Paths use ASCII letters, numbers, hyphens, underscores, and slash-separated segm
 
 ## Development
 
-Install Rust 1.98 or later and Node 24 or later. In two terminals:
+Install Rust 1.98 or later, Node 24.11 or later, and pnpm. The frontend pins its pnpm version in `web/package.json`. In two terminals:
 
 ```sh
 # Export BADDIE_ADMIN_PASSWORD securely in this shell first.
 cargo run
 
-npm --prefix web ci
-npm --prefix web run dev
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web run dev
 ```
 
-Vite proxies the API to the Rust server. A production build uses `npm --prefix web run build`; Rust then serves `web/dist` directly. `.agents/setup` installs dependencies and builds both parts in an Amp orb.
+Vite+ proxies the API to the Rust server. A production build uses `pnpm --dir web run build`; Rust then serves `web/dist` directly. `.agents/setup` installs dependencies and builds both parts in an Amp orb. Vite+ runs through the project-local `vp` CLI, so no global Vite+ installation is required.
 
 ```sh
 cargo test --locked
 cargo clippy --all-targets -- -D warnings
-npm --prefix web run typecheck
-npm --prefix web run build
+pnpm --dir web run check
+pnpm --dir web run typecheck
+pnpm --dir web run build
 ```
 
 Configuration: `BADDIE_BIND` defaults to `127.0.0.1:3000`, `BADDIE_DB` to `data/baddiecore.db`, `BADDIE_STATIC` to `web/dist`, and `BADDIE_SECURE_COOKIE` to false. `BADDIE_ADMIN_PASSWORD` is required. See [CONTRACT.md](CONTRACT.md) for the JSON API.
+
+Component styles live beside their components in `stylex.create` declarations and use `stylex.attrs` for Solid's DOM attributes. Shared controls live in `web/src/common.stylex.ts`; `styles.css` contains only the document reset. Use explicit color and border properties, and compose conditional styles through `stylex.attrs`. The StyleX plugin runs before Solid and extracts production CSS. Run `pnpm --dir web run fmt` to format the frontend with Vite+.
 
 ## Extending and operating
 

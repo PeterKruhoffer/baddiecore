@@ -1,6 +1,118 @@
 import { createSignal, For, Show } from "solid-js";
+import * as stylex from "@stylexjs/stylex";
 import type { Block, ComponentDef, Page, Region, Template } from "../types";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
+import { common } from "../common.stylex";
+const styles = stylex.create({
+  editor: {
+    height: { default: "100vh", "@media (max-width: 1050px)": "auto" },
+    minHeight: { default: null, "@media (max-width: 1050px)": "100vh" },
+    display: "flex",
+    flexDirection: "column",
+  },
+  head: {
+    minHeight: 83,
+    backgroundColor: "#fffdf8",
+    borderBottomWidth: 1,
+    borderBottomStyle: "solid",
+    borderBottomColor: "#ddd6cb",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "12px 20px",
+    flexWrap: { default: null, "@media (max-width: 1050px)": "wrap" },
+    gap: { default: null, "@media (max-width: 720px)": 10 },
+  },
+  bareInput: {
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    padding: 0,
+    boxShadow: { default: "none", ":focus": "none" },
+  },
+  title: { font: "600 24px Georgia, serif", width: 320 },
+  slug: { fontSize: 12, color: "#77716a", display: "block" },
+  actions: {
+    display: "flex",
+    gap: { default: 8, "@media (max-width: 720px)": 10 },
+    alignItems: "center",
+    flexWrap: { default: null, "@media (max-width: 1050px)": "wrap" },
+  },
+  status: { fontSize: 11, color: "#77716a" },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "210px minmax(420px, 1fr) 260px",
+      "@media (max-width: 1050px)": "190px 1fr",
+      "@media (max-width: 720px)": "1fr",
+    },
+    minHeight: 0,
+    flex: 1,
+  },
+  side: {
+    backgroundColor: "#fffdf8",
+    padding: 17,
+    borderRightWidth: 1,
+    borderRightStyle: "solid",
+    borderRightColor: "#ddd6cb",
+    overflow: { default: "auto", "@media (max-width: 1050px)": "visible" },
+  },
+  inspector: {
+    borderLeftWidth: 1,
+    borderLeftStyle: "solid",
+    borderLeftColor: "#ddd6cb",
+    borderRightWidth: 0,
+    position: { default: null, "@media (max-width: 1050px)": "static" },
+    gridColumn: { default: null, "@media (max-width: 1050px)": "1 / -1" },
+    width: { default: null, "@media (max-width: 1050px)": "auto" },
+  },
+  sideHeading: { font: "600 17px Georgia, serif" },
+  region: {
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "#ddd6cb",
+    padding: "15px 0",
+  },
+  between: { display: "flex", justifyContent: "space-between" },
+  small: { color: "#77716a" },
+  blockRow: { display: "flex", margin: "5px 0" },
+  blockMain: { flex: 1, textAlign: "left" },
+  selectedButton: { backgroundColor: "#eee9fa", borderColor: "#aa98da" },
+  canvasWrap: {
+    overflow: { default: "auto", "@media (max-width: 1050px)": "visible" },
+    backgroundColor: "#e8e3db",
+    padding: "0 25px 50px",
+  },
+  tools: {
+    height: 48,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    fontSize: 12,
+  },
+  activeTool: { backgroundColor: "#fffdf8" },
+  canvas: {
+    maxWidth: 920,
+    minHeight: "calc(100% - 40px)",
+    margin: "auto",
+    backgroundColor: "#fff",
+    boxShadow: "0 5px 22px #372d2420",
+  },
+  mobile: { maxWidth: 390 },
+  preview: {
+    outlineWidth: 2,
+    outlineStyle: "solid",
+    cursor: "pointer",
+    outlineColor: { default: "transparent", ":hover": "#6650a5" },
+  },
+  previewSelected: { outlineColor: "#6650a5" },
+  inspectorTitle: {
+    display: "flex",
+    justifyContent: "space-between",
+    padding: 11,
+    backgroundColor: "#f4f0e8",
+    borderRadius: 8,
+  },
+});
 type Props = {
   page: Page;
   templates: Template[];
@@ -27,9 +139,7 @@ export function PageEditor(p: Props) {
   const blocks = (r: string) => draft().blocks.filter((b) => b.region === r);
   function add(region: Region, id: string) {
     if (blocks(region.name).length >= region.max_components)
-      return setError(
-        `${region.name} allows up to ${region.max_components} components.`,
-      );
+      return setError(`${region.name} allows up to ${region.max_components} components.`);
     const def = p.components.find((c) => c.id === id);
     if (!def || !region.allowed_components.includes(id))
       return setError("That component is not allowed in this region.");
@@ -103,29 +213,27 @@ export function PageEditor(p: Props) {
   }
   const active = () => draft().blocks.find((b) => b.id === selected());
   return (
-    <section class="editor">
-      <header class="editor-head">
+    <section {...stylex.attrs(styles.editor)}>
+      <header {...stylex.attrs(styles.head)}>
         <div>
-          <p class="eyebrow">Page editor</p>
+          <p {...stylex.attrs(common.eyebrow)}>Page editor</p>
           <input
-            class="title-input"
+            {...stylex.attrs(common.control, styles.bareInput, styles.title)}
             aria-label="Page title"
             disabled={!!busy()}
             value={draft().title}
-            onInput={(e) =>
-              update({ ...draft(), title: e.currentTarget.value })
-            }
+            onInput={(e) => update({ ...draft(), title: e.currentTarget.value })}
           />
           <input
-            class="slug-input"
+            {...stylex.attrs(common.control, styles.bareInput, styles.slug)}
             aria-label="Page path"
             disabled={!!busy()}
             value={draft().slug}
             onInput={(e) => update({ ...draft(), slug: e.currentTarget.value })}
           />
         </div>
-        <div class="actions">
-          <span class="status">
+        <div {...stylex.attrs(styles.actions)}>
+          <span {...stylex.attrs(styles.status)}>
             {dirty()
               ? "Unsaved changes"
               : draft().published_revision === draft().revision
@@ -133,16 +241,21 @@ export function PageEditor(p: Props) {
                 : "Draft changes"}
           </span>
           <button
+            {...stylex.attrs(common.button)}
             disabled={!!busy()}
             onClick={() => act("save", () => p.onSave(draft()))}
           >
             {busy() === "save" ? "Saving…" : "Save draft"}
           </button>
-          <button class="primary" disabled={!!busy()} onClick={publish}>
+          <button
+            {...stylex.attrs(common.button, common.primary)}
+            disabled={!!busy()}
+            onClick={publish}
+          >
             {busy() === "publish" ? "Publishing…" : "Publish"}
           </button>
           <button
-            class="icon danger-link"
+            {...stylex.attrs(common.button, common.danger)}
             aria-label="Delete page"
             disabled={!!busy()}
             onClick={deletePage}
@@ -152,56 +265,50 @@ export function PageEditor(p: Props) {
         </div>
       </header>
       {error() && (
-        <p class="error banner" role="alert">
+        <p {...stylex.attrs(common.error)} role="alert">
           {error()}
         </p>
       )}
-      <div class="editor-grid" inert={!!busy()}>
-        <aside class="regions">
-          <h3>Page structure</h3>
-          <label>
+      <div {...stylex.attrs(styles.grid)} inert={!!busy()}>
+        <aside {...stylex.attrs(styles.side)}>
+          <h3 {...stylex.attrs(styles.sideHeading)}>Page structure</h3>
+          <label {...stylex.attrs(common.label)}>
             Template
             <select
+              {...stylex.attrs(common.control)}
               value={draft().template_id}
-              onChange={(e) =>
-                update({ ...draft(), template_id: e.currentTarget.value })
-              }
+              onChange={(e) => update({ ...draft(), template_id: e.currentTarget.value })}
             >
-              <For each={p.templates}>
-                {(t) => <option value={t.id}>{t.name}</option>}
-              </For>
+              <For each={p.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
             </select>
           </label>
           <For each={template()?.regions}>
             {(region) => (
-              <div class="region-group">
-                <div>
+              <div {...stylex.attrs(styles.region)}>
+                <div {...stylex.attrs(styles.between)}>
                   <strong>{region.name}</strong>
-                  <small>
+                  <small {...stylex.attrs(styles.small)}>
                     {blocks(region.name).length}/{region.max_components}
                   </small>
                 </div>
                 <For each={blocks(region.name)}>
                   {(block) => {
-                    const def = p.components.find(
-                      (c) => c.id === block.component_id,
-                    )!;
+                    const def = p.components.find((c) => c.id === block.component_id)!;
                     return (
-                      <div
-                        class={`block-row ${selected() === block.id ? "active" : ""}`}
-                      >
+                      <div {...stylex.attrs(styles.blockRow)}>
                         <button
+                          {...stylex.attrs(
+                            common.button,
+                            styles.blockMain,
+                            selected() === block.id && styles.selectedButton,
+                          )}
                           draggable="true"
                           onDragStart={() => (dragged = block.id)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => {
                             if (dragged && dragged !== block.id) {
-                              const from = draft().blocks.findIndex(
-                                  (b) => b.id === dragged,
-                                ),
-                                to = draft().blocks.findIndex(
-                                  (b) => b.id === block.id,
-                                ),
+                              const from = draft().blocks.findIndex((b) => b.id === dragged),
+                                to = draft().blocks.findIndex((b) => b.id === block.id),
                                 copy = [...draft().blocks];
                               copy.splice(to, 0, ...copy.splice(from, 1));
                               update({ ...draft(), blocks: copy });
@@ -209,10 +316,11 @@ export function PageEditor(p: Props) {
                           }}
                           onClick={() => setSelected(block.id)}
                         >
-                          <span class="drag">⠿</span>
+                          <span>⠿</span>
                           {def?.name}
                         </button>
                         <button
+                          {...stylex.attrs(common.button)}
                           type="button"
                           onClick={() => move(block.id, -1)}
                           aria-label={`Move ${def?.name} up`}
@@ -220,6 +328,7 @@ export function PageEditor(p: Props) {
                           ↑
                         </button>
                         <button
+                          {...stylex.attrs(common.button)}
                           type="button"
                           onClick={() => move(block.id, 1)}
                           aria-label={`Move ${def?.name} down`}
@@ -231,6 +340,7 @@ export function PageEditor(p: Props) {
                   }}
                 </For>
                 <select
+                  {...stylex.attrs(common.control)}
                   aria-label={`Add to ${region.name}`}
                   value=""
                   onChange={(e) => {
@@ -239,11 +349,7 @@ export function PageEditor(p: Props) {
                   }}
                 >
                   <option value="">+ Add component</option>
-                  <For
-                    each={p.components.filter((c) =>
-                      region.allowed_components.includes(c.id),
-                    )}
-                  >
+                  <For each={p.components.filter((c) => region.allowed_components.includes(c.id))}>
                     {(c) => <option value={c.id}>{c.name}</option>}
                   </For>
                 </select>
@@ -251,18 +357,18 @@ export function PageEditor(p: Props) {
             )}
           </For>
         </aside>
-        <main class="canvas-wrap">
-          <div class="preview-tools">
+        <main {...stylex.attrs(styles.canvasWrap)}>
+          <div {...stylex.attrs(styles.tools)}>
             <span>Live preview</span>
             <div>
               <button
-                class={!mobile() ? "active" : ""}
+                {...stylex.attrs(common.button, !mobile() && styles.activeTool)}
                 onClick={() => setMobile(false)}
               >
                 Desktop
               </button>
               <button
-                class={mobile() ? "active" : ""}
+                {...stylex.attrs(common.button, mobile() && styles.activeTool)}
                 onClick={() => setMobile(true)}
               >
                 Mobile
@@ -270,26 +376,22 @@ export function PageEditor(p: Props) {
             </div>
           </div>
           <div
-            class={`canvas ${mobile() ? "mobile" : ""}`}
+            {...stylex.attrs(styles.canvas, mobile() && styles.mobile)}
             onClick={(e) => {
               if ((e.target as HTMLElement).closest("a")) e.preventDefault();
             }}
           >
-            <For
-              each={blocksInTemplateOrder(
-                draft().blocks,
-                template()?.regions ?? [],
-              )}
-            >
+            <For each={blocksInTemplateOrder(draft().blocks, template()?.regions ?? [])}>
               {(block) => {
-                const def = p.components.find(
-                  (c) => c.id === block.component_id,
-                );
+                const def = p.components.find((c) => c.id === block.component_id);
                 return (
                   <Show when={def}>
                     {(d) => (
                       <div
-                        class={`preview-block ${selected() === block.id ? "selected" : ""}`}
+                        {...stylex.attrs(
+                          styles.preview,
+                          selected() === block.id && styles.previewSelected,
+                        )}
                         onClick={() => setSelected(block.id)}
                       >
                         <BlockRenderer block={block} definition={d()} />
@@ -300,36 +402,35 @@ export function PageEditor(p: Props) {
               }}
             </For>
             <Show when={!draft().blocks.length}>
-              <div class="empty">
-                <p class="eyebrow">Empty canvas</p>
+              <div>
+                <p {...stylex.attrs(common.eyebrow)}>Empty canvas</p>
                 <h2>Add your first component</h2>
                 <p>Use a region on the left to begin.</p>
               </div>
             </Show>
           </div>
         </main>
-        <aside class="inspector">
-          <h3>Properties</h3>
+        <aside {...stylex.attrs(styles.side, styles.inspector)}>
+          <h3 {...stylex.attrs(styles.sideHeading)}>Properties</h3>
           <Show
             when={active()}
             fallback={
-              <p class="muted">
+              <p {...stylex.attrs(common.muted)}>
                 Select a component on the canvas to edit its content.
               </p>
             }
           >
             {(block) => {
-              const def = () =>
-                p.components.find((c) => c.id === block()?.component_id)!;
+              const def = () => p.components.find((c) => c.id === block()?.component_id)!;
               return (
                 <>
-                  <div class="inspector-title">
+                  <div {...stylex.attrs(styles.inspectorTitle)}>
                     <div>
                       <strong>{def().name}</strong>
-                      <small>{block()?.region}</small>
+                      <small {...stylex.attrs(styles.small)}>{block()?.region}</small>
                     </div>
                     <button
-                      class="danger-link"
+                      {...stylex.attrs(common.button, common.danger)}
                       onClick={() => block() && remove(block()!.id)}
                     >
                       Remove
@@ -337,10 +438,11 @@ export function PageEditor(p: Props) {
                   </div>
                   <For each={def().fields}>
                     {(field) => (
-                      <label>
+                      <label {...stylex.attrs(common.label)}>
                         {field.label}
                         {field.kind === "textarea" ? (
                           <textarea
+                            {...stylex.attrs(common.control, common.textarea)}
                             required={field.required}
                             value={block()?.fields[field.name] || ""}
                             onInput={(e) =>
@@ -362,6 +464,7 @@ export function PageEditor(p: Props) {
                           />
                         ) : (
                           <input
+                            {...stylex.attrs(common.control)}
                             type={field.kind === "url" ? "url" : "text"}
                             required={field.required}
                             value={block()?.fields[field.name] || ""}

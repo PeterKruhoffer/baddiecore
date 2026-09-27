@@ -1,17 +1,148 @@
 import { createSignal, For, Show } from "solid-js";
+import * as stylex from "@stylexjs/stylex";
 import { createRequest } from "../lib/resource";
 import { api, ApiError } from "../lib/api";
 import type { ComponentDef, Page, Template } from "../types";
 import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
+import { common } from "../common.stylex";
+const styles = stylex.create({
+  shell: {
+    display: { default: "grid", "@media (max-width: 720px)": "block" },
+    gridTemplateColumns: {
+      default: "210px 1fr",
+      "@media (max-width: 1050px)": "180px 1fr",
+    },
+    height: "100vh",
+  },
+  sidebar: {
+    backgroundColor: "#282521",
+    color: "#f7f1e8",
+    padding: "21px 14px",
+    display: "flex",
+    flexDirection: "column",
+    height: { default: null, "@media (max-width: 720px)": "auto" },
+  },
+  brand: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    color: "inherit",
+    textDecoration: "none",
+    padding: "0 7px 27px",
+    fontWeight: 600,
+  },
+  brandSmall: { display: "block", fontSize: 10, color: "#77716a" },
+  nav: {
+    display: "grid",
+    gap: 4,
+    gridTemplateColumns: {
+      default: null,
+      "@media (max-width: 720px)": "repeat(3, 1fr)",
+    },
+  },
+  navButton: {
+    borderWidth: 0,
+    backgroundColor: { default: "transparent", ":hover": "#3a3530" },
+    color: { default: "#c9c2b9", ":hover": "#fff" },
+    textAlign: "left",
+    display: "flex",
+    justifyContent: "space-between",
+  },
+  active: { backgroundColor: "#3a3530", color: "#fff" },
+  sidebarFoot: {
+    marginTop: "auto",
+    display: "grid",
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "#48423c",
+    paddingTop: 15,
+  },
+  footLink: { color: "#c9c2b9", textDecoration: "none", padding: 7 },
+  workspace: { minWidth: 0, overflow: "auto" },
+  home: {
+    padding: { default: "42px 48px", "@media (max-width: 720px)": "25px 16px" },
+    maxWidth: 1200,
+    margin: "auto",
+  },
+  homeHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 30,
+  },
+  pageHeading: { font: "600 42px Georgia, serif", margin: 0 },
+  table: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#ddd6cb",
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#fffdf8",
+  },
+  tableRow: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "2fr 1.2fr 1fr 1fr",
+      "@media (max-width: 720px)": "1fr 1fr",
+    },
+    alignItems: "center",
+    padding: "14px 18px",
+    gap: 12,
+  },
+  tableHead: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    color: "#77716a",
+    backgroundColor: "#eee9e0",
+    display: { default: "grid", "@media (max-width: 720px)": "none" },
+  },
+  pageRow: {
+    borderWidth: 0,
+    borderRadius: 0,
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "#e9e3da",
+    textAlign: "left",
+  },
+  pill: {
+    fontSize: 12,
+    backgroundColor: "#f3e4d9",
+    color: "#7e4c2d",
+    width: "max-content",
+    padding: "4px 8px",
+    borderRadius: 20,
+  },
+  live: { backgroundColor: "#e4eee2", color: "#346039" },
+  backdrop: {
+    position: "fixed",
+    inset: 0,
+    backgroundColor: "#27231f99",
+    display: "grid",
+    placeItems: "center",
+    zIndex: 10,
+  },
+  modal: {
+    backgroundColor: "#fffdf8",
+    width: "min(430px, 90vw)",
+    borderRadius: 14,
+    padding: 26,
+  },
+  modalHeading: { font: "600 30px Georgia, serif" },
+  footer: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 22,
+  },
+  state: { padding: "15vh 10vw" },
+});
 export function AdminApp() {
   const request = createRequest(() => api.bootstrap());
   const data = request.value;
   const refetch = request.refetch;
-  const [section, setSection] = createSignal<
-    "pages" | "templates" | "components"
-  >("pages");
+  const [section, setSection] = createSignal<"pages" | "templates" | "components">("pages");
   const [pageId, setPageId] = createSignal<string>();
   const [dirty, setDirty] = createSignal(false);
   const [loggedOut, setLoggedOut] = createSignal(false);
@@ -38,10 +169,7 @@ export function AdminApp() {
     <Show
       when={
         !loggedOut() &&
-        !(
-          request.error() instanceof ApiError &&
-          (request.error() as ApiError).status === 401
-        )
+        !(request.error() instanceof ApiError && (request.error() as ApiError).status === 401)
       }
       fallback={
         <Login
@@ -52,45 +180,59 @@ export function AdminApp() {
         />
       }
     >
-      <div class="admin-shell">
-        <aside class="sidebar">
+      <div {...stylex.attrs(styles.shell)}>
+        <aside {...stylex.attrs(styles.sidebar)}>
           <a
-            class="brand"
+            {...stylex.attrs(styles.brand)}
             href="/admin"
             onClick={(e) => {
               if (!guard()) e.preventDefault();
             }}
           >
-            <span class="brand-mark">B</span>
+            <span {...stylex.attrs(common.brandMark)}>B</span>
             <span>
-              Baddiecore<small>Workspace</small>
+              Baddiecore
+              <small {...stylex.attrs(styles.brandSmall)}>Workspace</small>
             </span>
           </a>
-          <nav>
+          <nav {...stylex.attrs(styles.nav)}>
             <button
-              class={section() === "pages" ? "active" : ""}
+              {...stylex.attrs(
+                common.button,
+                styles.navButton,
+                section() === "pages" && styles.active,
+              )}
               onClick={() => changeSection("pages")}
             >
               Pages <span>{data()?.pages.length || 0}</span>
             </button>
             <button
-              class={section() === "templates" ? "active" : ""}
+              {...stylex.attrs(
+                common.button,
+                styles.navButton,
+                section() === "templates" && styles.active,
+              )}
               onClick={() => changeSection("templates")}
             >
               Templates
             </button>
             <button
-              class={section() === "components" ? "active" : ""}
+              {...stylex.attrs(
+                common.button,
+                styles.navButton,
+                section() === "components" && styles.active,
+              )}
               onClick={() => changeSection("components")}
             >
               Components
             </button>
           </nav>
-          <div class="sidebar-foot">
-            <a href="/" target="_blank">
+          <div {...stylex.attrs(styles.sidebarFoot)}>
+            <a {...stylex.attrs(styles.footLink)} href="/" target="_blank">
               View site ↗
             </a>
             <button
+              {...stylex.attrs(common.button, styles.navButton)}
               onClick={async () => {
                 if (!guard()) return;
                 try {
@@ -106,27 +248,26 @@ export function AdminApp() {
             </button>
           </div>
         </aside>
-        <div class="workspace">
+        <div {...stylex.attrs(styles.workspace)}>
           <Show when={request.loading()}>
-            <div class="loading">Opening workspace…</div>
+            <div>Opening workspace…</div>
           </Show>
           <Show
             when={
               request.error() &&
-              !(
-                request.error() instanceof ApiError &&
-                (request.error() as ApiError).status === 401
-              )
+              !(request.error() instanceof ApiError && (request.error() as ApiError).status === 401)
             }
           >
-            <div class="public-state" role="alert">
+            <div {...stylex.attrs(styles.state)} role="alert">
               <h1>Could not open workspace</h1>
               <p>
                 {request.error() instanceof Error
                   ? (request.error() as Error).message
                   : "Request failed"}
               </p>
-              <button onClick={() => void refetch()}>Try again</button>
+              <button {...stylex.attrs(common.button)} onClick={() => void refetch()}>
+                Try again
+              </button>
             </div>
           </Show>
           <Show when={data()}>
@@ -145,19 +286,13 @@ export function AdminApp() {
                           onDirty={setDirty}
                           onSave={async (value, isNew) => {
                             if (section() === "templates")
-                              isNew
-                                ? await api.createTemplate(
-                                    value as Omit<Template, "id">,
-                                  )
-                                : await api.updateTemplate(value as Template);
+                              await (isNew
+                                ? api.createTemplate(value as Omit<Template, "id">)
+                                : api.updateTemplate(value as Template));
                             else
-                              isNew
-                                ? await api.createComponent(
-                                    value as Omit<ComponentDef, "id">,
-                                  )
-                                : await api.updateComponent(
-                                    value as ComponentDef,
-                                  );
+                              await (isNew
+                                ? api.createComponent(value as Omit<ComponentDef, "id">)
+                                : api.updateComponent(value as ComponentDef));
                             await refresh();
                           }}
                         />
@@ -241,21 +376,19 @@ function PageHome(p: {
     }
   }
   return (
-    <section class="page-home">
-      <header>
+    <section {...stylex.attrs(styles.home)}>
+      <header {...stylex.attrs(styles.homeHeader)}>
         <div>
-          <p class="eyebrow">Content</p>
-          <h1>Pages</h1>
-          <p class="muted">
-            Draft, preview and publish the pages on your site.
-          </p>
+          <p {...stylex.attrs(common.eyebrow)}>Content</p>
+          <h1 {...stylex.attrs(styles.pageHeading)}>Pages</h1>
+          <p {...stylex.attrs(common.muted)}>Draft, preview and publish the pages on your site.</p>
         </div>
-        <button class="primary" onClick={() => setCreating(true)}>
+        <button {...stylex.attrs(common.button, common.primary)} onClick={() => setCreating(true)}>
           New page
         </button>
       </header>
-      <div class="page-table">
-        <div class="table-head">
+      <div {...stylex.attrs(styles.table)}>
+        <div {...stylex.attrs(styles.tableRow, styles.tableHead)}>
           <span>Page</span>
           <span>Path</span>
           <span>Status</span>
@@ -263,11 +396,17 @@ function PageHome(p: {
         </div>
         <For each={p.pages}>
           {(page) => (
-            <button onClick={() => p.onChoose(page.id)}>
+            <button
+              {...stylex.attrs(common.button, styles.tableRow, styles.pageRow)}
+              onClick={() => p.onChoose(page.id)}
+            >
               <strong>{page.title}</strong>
               <code>{page.slug}</code>
               <span
-                class={`pill ${page.published_revision === page.revision ? "live" : ""}`}
+                {...stylex.attrs(
+                  styles.pill,
+                  page.published_revision === page.revision && styles.live,
+                )}
               >
                 {page.published_revision === null
                   ? "Unpublished"
@@ -281,36 +420,44 @@ function PageHome(p: {
         </For>
       </div>
       <Show when={creating()}>
-        <div class="modal-backdrop" onClick={() => setCreating(false)}>
+        <div {...stylex.attrs(styles.backdrop)} onClick={() => setCreating(false)}>
           <form
-            class="modal"
+            {...stylex.attrs(styles.modal)}
             onSubmit={submit}
             onClick={(e) => e.stopPropagation()}
           >
-            <p class="eyebrow">New page</p>
-            <h2>Start with the basics</h2>
-            <label>
+            <p {...stylex.attrs(common.eyebrow)}>New page</p>
+            <h2 {...stylex.attrs(styles.modalHeading)}>Start with the basics</h2>
+            <label {...stylex.attrs(common.label)}>
               Title
-              <input name="title" required autofocus />
+              <input {...stylex.attrs(common.control)} name="title" required autofocus />
             </label>
-            <label>
+            <label {...stylex.attrs(common.label)}>
               Path
-              <input name="slug" required pattern="/.*" placeholder="/about" />
+              <input
+                {...stylex.attrs(common.control)}
+                name="slug"
+                required
+                pattern="/.*"
+                placeholder="/about"
+              />
             </label>
-            <label>
+            <label {...stylex.attrs(common.label)}>
               Template
-              <select name="template_id" required>
-                <For each={p.templates}>
-                  {(t) => <option value={t.id}>{t.name}</option>}
-                </For>
+              <select {...stylex.attrs(common.control)} name="template_id" required>
+                <For each={p.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
               </select>
             </label>
-            {error() && <p class="error">{error()}</p>}
-            <footer>
-              <button type="button" onClick={() => setCreating(false)}>
+            {error() && <p {...stylex.attrs(common.error)}>{error()}</p>}
+            <footer {...stylex.attrs(styles.footer)}>
+              <button
+                {...stylex.attrs(common.button)}
+                type="button"
+                onClick={() => setCreating(false)}
+              >
                 Cancel
               </button>
-              <button class="primary">Create page</button>
+              <button {...stylex.attrs(common.button, common.primary)}>Create page</button>
             </footer>
           </form>
         </div>
