@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 export function createRequest<T>(load: () => Promise<T>) {
   const [value, setValue] = createSignal<T>();
   const [error, setError] = createSignal<unknown>();
@@ -15,6 +15,9 @@ export function createRequest<T>(load: () => Promise<T>) {
       setLoading(false);
     }
   }
-  void refetch();
+  createEffect(
+    () => true,
+    () => void refetch(),
+  );
   return { value, error, loading, refetch };
 }
