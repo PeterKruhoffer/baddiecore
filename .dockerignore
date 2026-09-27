@@ -1,0 +1,8 @@
+.git
+.amp
+target
+data
+.env
+web/node_modules
+web/dist
+web/*.tsbuildinfo

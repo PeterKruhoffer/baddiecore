@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# No project dependencies to install yet.
-exit 0
+if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+source "$HOME/.cargo/env"
+cargo fetch --locked
+npm --prefix web ci
+npm --prefix web run build
+cargo build --locked

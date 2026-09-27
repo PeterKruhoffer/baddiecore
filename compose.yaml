@@ -1,0 +1,18 @@
+services:
+  cms:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      BADDIE_ADMIN_PASSWORD: ${BADDIE_ADMIN_PASSWORD:?Set BADDIE_ADMIN_PASSWORD in .env}
+      BADDIE_SECURE_COOKIE: ${BADDIE_SECURE_COOKIE:-false}
+    volumes:
+      - content:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  content:

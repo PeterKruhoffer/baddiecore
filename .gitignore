@@ -1,2 +1,6 @@
 # Amp orb runtime state
 .amp/portals/*
+/target/
+/data/
+/.env
+/.amp/in/

@@ -1,0 +1,27 @@
+FROM node:24-bookworm-slim AS web
+WORKDIR /build/web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+FROM rust:1.98-bookworm AS backend
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+RUN cargo build --locked --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --create-home cms \
+    && mkdir /data && chown cms:cms /data
+COPY --from=backend /build/target/release/baddiecore /usr/local/bin/baddiecore
+COPY --from=web /build/web/dist /app/web
+ENV BADDIE_BIND=0.0.0.0:3000 BADDIE_DB=/data/baddiecore.db BADDIE_STATIC=/app/web
+USER cms
+WORKDIR /app
+EXPOSE 3000
+VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=3s CMD curl --fail --silent http://127.0.0.1:3000/health || exit 1
+CMD ["baddiecore"]
