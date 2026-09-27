@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -99,8 +100,45 @@ pub struct Content {
 pub struct AppState {
     db: Arc<Mutex<Connection>>,
     password: Arc<String>,
-    sessions: Arc<Mutex<HashSet<String>>>,
+    sessions: Arc<Mutex<SessionStore>>,
     secure_cookie: bool,
+}
+
+const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+const MAX_SESSIONS: usize = 128;
+
+#[derive(Default)]
+struct SessionStore {
+    tokens: HashMap<String, Instant>,
+}
+
+impl SessionStore {
+    fn insert(&mut self, token: String, now: Instant) {
+        self.prune(now);
+        if self.tokens.len() >= MAX_SESSIONS
+            && let Some(oldest) = self
+                .tokens
+                .iter()
+                .min_by_key(|(_, expires)| *expires)
+                .map(|(token, _)| token.clone())
+        {
+            self.tokens.remove(&oldest);
+        }
+        self.tokens.insert(token, now + SESSION_LIFETIME);
+    }
+
+    fn contains(&mut self, token: &str, now: Instant) -> bool {
+        self.prune(now);
+        self.tokens.contains_key(token)
+    }
+
+    fn remove(&mut self, token: &str) {
+        self.tokens.remove(token);
+    }
+
+    fn prune(&mut self, now: Instant) {
+        self.tokens.retain(|_, expires| *expires > now);
+    }
 }
 
 #[derive(Debug)]
@@ -153,8 +191,9 @@ impl AppState {
     }
 
     fn seed(&self) -> Result<()> {
-        let db = self.db.lock().unwrap();
-        let count: i64 = db
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction().map_err(db_error)?;
+        let count: i64 = tx
             .query_row("SELECT count(*) FROM components", [], |r| r.get(0))
             .map_err(db_error)?;
         if count != 0 {
@@ -220,7 +259,7 @@ impl AppState {
                     })
                     .collect(),
             };
-            db.execute(
+            tx.execute(
                 "INSERT INTO components VALUES(?1,?2)",
                 params![component.id, json(&component)?],
             )
@@ -237,7 +276,7 @@ impl AppState {
                 max_components: 20,
             }],
         };
-        db.execute(
+        tx.execute(
             "INSERT INTO templates VALUES(?1,?2)",
             params![template.id, json(&template)?],
         )
@@ -278,11 +317,12 @@ impl AppState {
             revision: 1,
             published_revision: None,
         };
-        db.execute(
+        tx.execute(
             "INSERT INTO pages VALUES(?1,?2,?3)",
             params![page.id, page.slug, json(&page)?],
         )
         .map_err(db_error)?;
+        tx.commit().map_err(db_error)?;
         Ok(())
     }
 
@@ -339,7 +379,7 @@ async fn require_auth(
     let token = cookie_value(&headers, "baddie_session");
     if token
         .as_ref()
-        .is_some_and(|t| state.sessions.lock().unwrap().contains(t))
+        .is_some_and(|t| state.sessions.lock().unwrap().contains(t, Instant::now()))
     {
         next.run(request).await
     } else {
@@ -398,7 +438,11 @@ async fn login(
         ));
     }
     let token = Uuid::new_v4().to_string();
-    state.sessions.lock().unwrap().insert(token.clone());
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(token.clone(), Instant::now());
     let cookie = Cookie::build(("baddie_session", token))
         .http_only(true)
         .same_site(SameSite::Strict)
@@ -801,25 +845,47 @@ fn validate_template(db: &Connection, item: &Template) -> Result<()> {
     Ok(())
 }
 fn validate_slug(value: &str) -> Result<()> {
-    if !value.starts_with('/')
-        || value.starts_with("//")
-        || value.contains(['?', '#', '\\'])
-        || value.split('/').any(|p| p == "." || p == "..")
-    {
-        Err(ApiError::bad("slug must be a safe absolute path"))
-    } else {
+    if value == "/" {
         Ok(())
+    } else {
+        let segments: Vec<_> = value.strip_prefix('/').unwrap_or("").split('/').collect();
+        let valid = !segments.is_empty()
+            && segments.iter().all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
+            && !matches!(
+                segments[0].to_ascii_lowercase().as_str(),
+                "admin" | "api" | "health" | "assets"
+            );
+        if valid {
+            Ok(())
+        } else {
+            Err(ApiError::bad("slug must be a safe canonical path"))
+        }
     }
 }
 fn validate_url(value: &str) -> Result<()> {
-    if value.starts_with('/') && !value.starts_with("//") && !value.contains(['\\', '\n', '\r']) {
+    if value
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace() || character == '\\')
+    {
+        return Err(ApiError::bad(
+            "URL must be a relative path or an http/https URL",
+        ));
+    }
+    if value.starts_with('/') && !value.starts_with("//") {
         return Ok(());
     }
-    let lower = value.to_ascii_lowercase();
-    let rest = lower
-        .strip_prefix("http://")
-        .or_else(|| lower.strip_prefix("https://"));
-    if rest.is_some_and(|r| !r.is_empty() && !r.starts_with('/') && !r.contains(['\n', '\r'])) {
+    let parsed = value.parse::<axum::http::Uri>().ok();
+    if parsed.as_ref().is_some_and(|uri| {
+        matches!(uri.scheme_str(), Some("http" | "https"))
+            && uri
+                .authority()
+                .is_some_and(|authority| !authority.host().is_empty())
+    }) {
         Ok(())
     } else {
         Err(ApiError::bad(
@@ -898,4 +964,48 @@ fn title_case(value: &str) -> String {
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
         .replace('_', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_expire_and_are_bounded() {
+        let start = Instant::now();
+        let mut sessions = SessionStore::default();
+        sessions.insert("expired".into(), start);
+        assert!(sessions.contains("expired", start + SESSION_LIFETIME - Duration::from_secs(1)));
+        assert!(!sessions.contains("expired", start + SESSION_LIFETIME));
+
+        for index in 0..=MAX_SESSIONS {
+            sessions.insert(index.to_string(), start + Duration::from_secs(index as u64));
+        }
+        assert_eq!(sessions.tokens.len(), MAX_SESSIONS);
+        assert!(!sessions.tokens.contains_key("0"));
+    }
+
+    #[test]
+    fn failed_seed_rolls_back_all_inserts() {
+        let directory = tempfile::tempdir().unwrap();
+        let state =
+            AppState::open(directory.path().join("cms.db"), "secret".into(), false).unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute_batch(
+                "DELETE FROM snapshots; DELETE FROM pages; DELETE FROM templates; DELETE FROM components;
+                 INSERT INTO templates(id, data) VALUES('homepage', '{}');",
+            )
+            .unwrap();
+        }
+
+        assert!(state.seed().is_err());
+        let component_count: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM components", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(component_count, 0);
+    }
 }

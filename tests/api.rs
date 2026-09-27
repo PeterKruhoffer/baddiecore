@@ -361,7 +361,21 @@ async fn data_and_published_content_persist_after_reopen() {
 #[tokio::test]
 async fn slug_and_origin_safety_are_enforced() {
     let app = setup().await;
-    for slug in ["relative", "//host/path", "/a/../secret", "/x?query"] {
+    for slug in [
+        "relative",
+        "//host/path",
+        "/a/../secret",
+        "/x?query",
+        "/admin",
+        "/API/x",
+        "/health/check",
+        "/assets/x",
+        "/two//parts",
+        "/trailing/",
+        "/white space",
+        "/%2e%2e/secret",
+        "/nonascii-é",
+    ] {
         let response = call(
             &app.app,
             "POST",
@@ -389,4 +403,59 @@ async fn slug_and_origin_safety_are_enforced() {
         .unwrap();
     let response = app.app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn url_safety_is_enforced() {
+    let app = setup().await;
+    let mut page = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    for url in [
+        "//evil.example/x",
+        "https:///missing-host",
+        "ftp://example.test/x",
+        "https://example.test\\evil",
+        "https://example.test/a b",
+        "https://example.test/\nnext",
+    ] {
+        page.blocks[0]
+            .fields
+            .insert("button_url".into(), url.into());
+        let response = call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "accepted {url:?}"
+        );
+    }
+    for url in [
+        "/local/path?x=1",
+        "http://example.test",
+        "https://example.test/path",
+    ] {
+        page.blocks[0]
+            .fields
+            .insert("button_url".into(), url.into());
+        let response = call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "rejected {url:?}");
+        page = read(response).await;
+    }
 }
