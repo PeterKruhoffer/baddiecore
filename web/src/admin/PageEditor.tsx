@@ -3,6 +3,7 @@ import * as stylex from "@stylexjs/stylex";
 import type { Block, ComponentDef, Page, Region, Template } from "../types";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
 import { common } from "../common.stylex";
+import { joinPath, pageParentPaths, parentPath, pathSegment } from "./pageTree";
 const styles = stylex.create({
   editor: {
     height: { default: "100vh", "@media (max-width: 1050px)": "auto" },
@@ -112,9 +113,12 @@ const styles = stylex.create({
     backgroundColor: "#f4f0e8",
     borderRadius: 8,
   },
+  pathHelp: { fontSize: 12, lineHeight: 1.45, color: "#77716a" },
+  pathPreview: { overflowWrap: "anywhere", color: "#6650a5" },
 });
 type Props = {
   page: Page;
+  pages: Page[];
   templates: Template[];
   components: ComponentDef[];
   onSave: (p: Page) => Promise<Page>;
@@ -124,6 +128,8 @@ type Props = {
 };
 export function PageEditor(p: Props) {
   const [draft, setDraft] = createSignal(structuredClone(p.page));
+  const [parent, setParent] = createSignal(parentPath(p.page.slug));
+  const [segment, setSegment] = createSignal(pathSegment(p.page.slug));
   const [selected, setSelected] = createSignal<string>();
   const [mobile, setMobile] = createSignal(false);
   const [busy, setBusy] = createSignal("");
@@ -131,6 +137,12 @@ export function PageEditor(p: Props) {
   const [dirty, setDirty] = createSignal(false);
   let dragged: string | undefined;
   const template = () => p.templates.find((t) => t.id === draft().template_id);
+  const isRoot = () => p.page.slug === "/";
+  const availableParents = () =>
+    pageParentPaths(p.pages).filter(
+      (path) => path !== p.page.slug && !path.startsWith(`${p.page.slug}/`),
+    );
+  const validPath = () => isRoot() || /^[A-Za-z0-9_-]+$/.test(segment());
   const update = (value: Page) => {
     setDraft(value);
     setDirty(true);
@@ -224,13 +236,7 @@ export function PageEditor(p: Props) {
             value={draft().title}
             onInput={(e) => update({ ...draft(), title: e.currentTarget.value })}
           />
-          <input
-            {...stylex.attrs(common.control, styles.bareInput, styles.slug)}
-            aria-label="Page path"
-            disabled={!!busy()}
-            value={draft().slug}
-            onInput={(e) => update({ ...draft(), slug: e.currentTarget.value })}
-          />
+          <code {...stylex.attrs(styles.slug)}>{draft().slug}</code>
         </div>
         <div {...stylex.attrs(styles.actions)}>
           <span {...stylex.attrs(styles.status)}>
@@ -242,14 +248,14 @@ export function PageEditor(p: Props) {
           </span>
           <button
             {...stylex.attrs(common.button)}
-            disabled={!!busy()}
+            disabled={!!busy() || !validPath()}
             onClick={() => act("save", () => p.onSave(draft()))}
           >
             {busy() === "save" ? "Saving…" : "Save draft"}
           </button>
           <button
             {...stylex.attrs(common.button, common.primary)}
-            disabled={!!busy()}
+            disabled={!!busy() || !validPath()}
             onClick={publish}
           >
             {busy() === "publish" ? "Publishing…" : "Publish"}
@@ -282,6 +288,60 @@ export function PageEditor(p: Props) {
               <For each={p.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
             </select>
           </label>
+          <h3 {...stylex.attrs(styles.sideHeading)}>URL</h3>
+          <Show
+            when={!isRoot()}
+            fallback={
+              <p {...stylex.attrs(styles.pathHelp)}>
+                The root page stays at <code>/</code> and cannot be moved or renamed.
+              </p>
+            }
+          >
+            <label {...stylex.attrs(common.label)}>
+              Parent
+              <select
+                {...stylex.attrs(common.control)}
+                value={parent()}
+                onChange={(e) => {
+                  setParent(e.currentTarget.value);
+                  update({
+                    ...draft(),
+                    slug: joinPath(e.currentTarget.value, segment()),
+                  });
+                }}
+              >
+                <For each={availableParents()}>
+                  {(path) => <option value={path}>{path}</option>}
+                </For>
+              </select>
+            </label>
+            <label {...stylex.attrs(common.label)}>
+              URL segment
+              <input
+                {...stylex.attrs(common.control)}
+                required
+                pattern="[A-Za-z0-9_\-]+"
+                value={segment()}
+                onInput={(e) => {
+                  setSegment(e.currentTarget.value);
+                  update({
+                    ...draft(),
+                    slug: joinPath(parent(), e.currentTarget.value),
+                  });
+                }}
+              />
+            </label>
+            <p {...stylex.attrs(styles.pathHelp)}>
+              Path preview: <code {...stylex.attrs(styles.pathPreview)}>{draft().slug}</code>
+            </p>
+            <Show when={!validPath()}>
+              <p {...stylex.attrs(common.error)}>Use letters, numbers, hyphens or underscores.</p>
+            </Show>
+            <p {...stylex.attrs(styles.pathHelp)}>
+              Saving a move or rename also moves every descendant draft URL. Published pages keep
+              their current URLs until each changed page is published again.
+            </p>
+          </Show>
           <For each={template()?.regions}>
             {(region) => (
               <div {...stylex.attrs(styles.region)}>

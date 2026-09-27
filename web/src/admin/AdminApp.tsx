@@ -7,6 +7,7 @@ import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
 import { common } from "../common.stylex";
+import { buildPageTree, joinPath, pageParentPaths, type PageTreeNode } from "./pageTree";
 const styles = stylex.create({
   shell: {
     display: { default: "grid", "@media (max-width: 720px)": "block" },
@@ -70,8 +71,11 @@ const styles = stylex.create({
   homeHeader: {
     display: "flex",
     justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
     marginBottom: 30,
   },
+  newPage: { flexShrink: 0, whiteSpace: "nowrap" },
   pageHeading: { font: "600 42px Georgia, serif", margin: 0 },
   table: {
     borderWidth: 1,
@@ -81,16 +85,6 @@ const styles = stylex.create({
     overflow: "hidden",
     backgroundColor: "#fffdf8",
   },
-  tableRow: {
-    display: "grid",
-    gridTemplateColumns: {
-      default: "2fr 1.2fr 1fr 1fr",
-      "@media (max-width: 720px)": "1fr 1fr",
-    },
-    alignItems: "center",
-    padding: "14px 18px",
-    gap: 12,
-  },
   tableHead: {
     fontSize: 11,
     textTransform: "uppercase",
@@ -98,14 +92,37 @@ const styles = stylex.create({
     backgroundColor: "#eee9e0",
     display: { default: "grid", "@media (max-width: 720px)": "none" },
   },
-  pageRow: {
-    borderWidth: 0,
-    borderRadius: 0,
+  treeRow: {
+    display: "grid",
+    gridTemplateColumns: {
+      default: "minmax(220px, 2fr) 1fr 1fr auto",
+      "@media (max-width: 720px)": "minmax(0, 1fr) auto",
+    },
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 18px",
     borderTopWidth: 1,
     borderTopStyle: "solid",
     borderTopColor: "#e9e3da",
-    textAlign: "left",
   },
+  treeList: { margin: 0, padding: 0, listStyleType: "none" },
+  treeName: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 },
+  treeToggle: {
+    width: 28,
+    padding: 3,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+  },
+  treePage: {
+    padding: 4,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    textAlign: "left",
+    overflowWrap: "anywhere",
+  },
+  virtualFolder: { color: "#77716a", fontStyle: "italic" },
+  addChild: { padding: "5px 8px", whiteSpace: "nowrap" },
+  preview: { fontFamily: "monospace", color: "#6650a5", overflowWrap: "anywhere" },
   pill: {
     fontSize: 12,
     backgroundColor: "#f3e4d9",
@@ -321,6 +338,7 @@ export function AdminApp() {
                         {() => (
                           <PageEditor
                             page={page()!}
+                            pages={d().pages}
                             templates={d().templates}
                             components={d().components}
                             onDirty={setDirty}
@@ -361,19 +379,35 @@ function PageHome(p: {
   onCreate: (v: Pick<Page, "title" | "slug" | "template_id">) => Promise<void>;
 }) {
   const [creating, setCreating] = createSignal(false);
+  const [parent, setParent] = createSignal("/");
+  const [segment, setSegment] = createSignal("");
   const [error, setError] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [expanded, setExpanded] = createSignal(new Set(pageParentPaths(p.pages)));
+  const tree = () => buildPageTree(p.pages);
+  const openCreate = (path = "/") => {
+    setParent(path);
+    setSegment("");
+    setError("");
+    setCreating(true);
+  };
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    if (busy()) return;
+    setBusy(true);
+    setError("");
     const form = new FormData(e.currentTarget as HTMLFormElement);
     try {
       await p.onCreate({
         title: String(form.get("title")),
-        slug: String(form.get("slug")),
+        slug: joinPath(String(form.get("parent")), String(form.get("segment"))),
         template_id: String(form.get("template_id")),
       });
       setCreating(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not create page");
+    } finally {
+      setBusy(false);
     }
   }
   return (
@@ -384,41 +418,35 @@ function PageHome(p: {
           <h1 {...stylex.attrs(styles.pageHeading)}>Pages</h1>
           <p {...stylex.attrs(common.muted)}>Draft, preview and publish the pages on your site.</p>
         </div>
-        <button {...stylex.attrs(common.button, common.primary)} onClick={() => setCreating(true)}>
+        <button
+          {...stylex.attrs(common.button, common.primary, styles.newPage)}
+          onClick={() => openCreate()}
+        >
           New page
         </button>
       </header>
       <div {...stylex.attrs(styles.table)}>
-        <div {...stylex.attrs(styles.tableRow, styles.tableHead)}>
+        <div {...stylex.attrs(styles.treeRow, styles.tableHead)}>
           <span>Page</span>
-          <span>Path</span>
           <span>Status</span>
-          <span>Updated</span>
+          <span>Revision</span>
+          <span>Actions</span>
         </div>
-        <For each={p.pages}>
-          {(page) => (
-            <button
-              {...stylex.attrs(common.button, styles.tableRow, styles.pageRow)}
-              onClick={() => p.onChoose(page.id)}
-            >
-              <strong>{page.title}</strong>
-              <code>{page.slug}</code>
-              <span
-                {...stylex.attrs(
-                  styles.pill,
-                  page.published_revision === page.revision && styles.live,
-                )}
-              >
-                {page.published_revision === null
-                  ? "Unpublished"
-                  : page.published_revision === page.revision
-                    ? "Published"
-                    : "Draft changes"}
-              </span>
-              <span>Revision {page.revision} →</span>
-            </button>
-          )}
-        </For>
+        <ul {...stylex.attrs(styles.treeList)} aria-label="Page tree">
+          <PageTreeRows
+            node={tree()}
+            level={0}
+            expanded={expanded()}
+            onToggle={(path) => {
+              const next = new Set(expanded());
+              if (next.has(path)) next.delete(path);
+              else next.add(path);
+              setExpanded(next);
+            }}
+            onChoose={p.onChoose}
+            onAdd={openCreate}
+          />
+        </ul>
       </div>
       <Show when={creating()}>
         <div {...stylex.attrs(styles.backdrop)} onClick={() => setCreating(false)}>
@@ -434,15 +462,39 @@ function PageHome(p: {
               <input {...stylex.attrs(common.control)} name="title" required autofocus />
             </label>
             <label {...stylex.attrs(common.label)}>
-              Path
+              Parent
+              <select
+                {...stylex.attrs(common.control)}
+                name="parent"
+                value={parent()}
+                onChange={(e) => setParent(e.currentTarget.value)}
+              >
+                <For each={pageParentPaths(p.pages)}>
+                  {(path) => <option value={path}>{path}</option>}
+                </For>
+              </select>
+            </label>
+            <label {...stylex.attrs(common.label)}>
+              URL segment
               <input
                 {...stylex.attrs(common.control)}
-                name="slug"
-                required
-                pattern="/.*"
-                placeholder="/about"
+                name="segment"
+                required={parent() !== "/" || p.pages.some((page) => page.slug === "/")}
+                pattern="[A-Za-z0-9_\-]+"
+                placeholder="about"
+                value={segment()}
+                onInput={(e) => setSegment(e.currentTarget.value)}
               />
             </label>
+            <p>
+              Path preview:{" "}
+              <code {...stylex.attrs(styles.preview)}>{joinPath(parent(), segment())}</code>
+            </p>
+            <Show when={!p.pages.some((page) => page.slug === "/")}>
+              <p {...stylex.attrs(common.muted)}>
+                For a homepage, choose / and leave the segment empty.
+              </p>
+            </Show>
             <label {...stylex.attrs(common.label)}>
               Template
               <select {...stylex.attrs(common.control)} name="template_id" required>
@@ -458,11 +510,85 @@ function PageHome(p: {
               >
                 Cancel
               </button>
-              <button {...stylex.attrs(common.button, common.primary)}>Create page</button>
+              <button {...stylex.attrs(common.button, common.primary)} disabled={busy()}>
+                {busy() ? "Creating…" : "Create page"}
+              </button>
             </footer>
           </form>
         </div>
       </Show>
     </section>
+  );
+}
+
+function PageTreeRows(p: {
+  node: PageTreeNode;
+  level: number;
+  expanded: Set<string>;
+  onToggle: (path: string) => void;
+  onChoose: (id: string) => void;
+  onAdd: (path: string) => void;
+}) {
+  const open = () => p.expanded.has(p.node.path);
+  return (
+    <li>
+      <div {...stylex.attrs(styles.treeRow)}>
+        <div {...stylex.attrs(styles.treeName)} style={{ "padding-left": `${p.level * 18}px` }}>
+          <Show
+            when={p.node.children.length}
+            fallback={<span {...stylex.attrs(styles.treeToggle)} aria-hidden="true" />}
+          >
+            <button
+              {...stylex.attrs(common.button, styles.treeToggle)}
+              aria-label={`${open() ? "Collapse" : "Expand"} ${p.node.path}`}
+              aria-expanded={open() ? "true" : "false"}
+              onClick={() => p.onToggle(p.node.path)}
+            >
+              {open() ? "▾" : "▸"}
+            </button>
+          </Show>
+          <Show
+            when={p.node.page}
+            fallback={<span {...stylex.attrs(styles.virtualFolder)}>{p.node.name}</span>}
+          >
+            {(page) => (
+              <button {...stylex.attrs(styles.treePage)} onClick={() => p.onChoose(page().id)}>
+                <strong>{page().title}</strong> <code>{page().slug}</code>
+              </button>
+            )}
+          </Show>
+        </div>
+        <Show when={p.node.page} fallback={<span>Folder</span>}>
+          {(page) => (
+            <span
+              {...stylex.attrs(
+                styles.pill,
+                page().published_revision === page().revision && styles.live,
+              )}
+            >
+              {page().published_revision === null
+                ? "Unpublished"
+                : page().published_revision === page().revision
+                  ? "Published"
+                  : "Draft changes"}
+            </span>
+          )}
+        </Show>
+        <span>{p.node.page ? `Revision ${p.node.page.revision}` : "—"}</span>
+        <button
+          {...stylex.attrs(common.button, styles.addChild)}
+          onClick={() => p.onAdd(p.node.path)}
+        >
+          + Child
+        </button>
+      </div>
+      <Show when={open() && p.node.children.length}>
+        <ul {...stylex.attrs(styles.treeList)}>
+          <For each={p.node.children}>
+            {(child) => <PageTreeRows {...p} node={child} level={p.level + 1} />}
+          </For>
+        </ul>
+      </Show>
+    </li>
   );
 }

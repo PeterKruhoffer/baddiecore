@@ -30,14 +30,17 @@ impl TestDatabase {
             .expect("Set TEST_DATABASE_URL to a disposable MySQL server URL without a database or query string");
         let opts = Opts::from_url(&base).expect("invalid TEST_DATABASE_URL");
         assert!(opts.get_db_name().is_none() && !base.contains('?'));
-        let admin = Pool::new(opts).unwrap();
+        // Tests create several independent app/CLI pools in parallel. Keep idle
+        // connections at zero rather than exhausting MySQL's default limit.
+        let pool_query = "pool_min=0&pool_max=4";
+        let admin = Pool::new(Opts::from_url(&format!("{base}?{pool_query}")).unwrap()).unwrap();
         let name = format!("baddie_test_{}", uuid::Uuid::new_v4().simple());
         admin
             .get_conn()
             .unwrap()
             .query_drop(format!("CREATE DATABASE `{name}`"))
             .unwrap();
-        let url = format!("{}/{name}", base.trim_end_matches('/'));
+        let url = format!("{}/{name}?{pool_query}", base.trim_end_matches('/'));
         Self { admin, name, url }
     }
 }
@@ -570,11 +573,11 @@ async fn mysql_paths_are_case_sensitive_and_bounded() {
 #[tokio::test]
 async fn publish_conflict_rolls_back_and_delete_cascades() {
     let app = setup().await;
-    let mut home = bootstrap(&app).await.pages.remove(0);
+    let mut home = create_test_page(&app, "/original").await;
     let response = call(
         &app.app,
         "POST",
-        "/api/admin/pages/home/publish",
+        &format!("/api/admin/pages/{}/publish", home.id),
         Some(&app.cookie),
         Some(&json!({"revision":1})),
     )
@@ -584,7 +587,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
     let response = call(
         &app.app,
         "PUT",
-        "/api/admin/pages/home",
+        &format!("/api/admin/pages/{}", home.id),
         Some(&app.cookie),
         Some(&home),
     )
@@ -613,7 +616,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
         .status(),
         StatusCode::OK
     );
-    replacement.slug = "/".into();
+    replacement.slug = "/original".into();
     assert_eq!(
         call(
             &app.app,
@@ -645,7 +648,10 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
         .find(|p| p.id == replacement.id)
         .unwrap();
     assert_eq!(draft.published_revision, Some(1));
-    for (slug, id) in [("/", "home"), ("/replacement", replacement.id.as_str())] {
+    for (slug, id) in [
+        ("/original", home.id.as_str()),
+        ("/replacement", replacement.id.as_str()),
+    ] {
         let public: Content = read(
             call(
                 &app.app,
@@ -664,7 +670,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
         call(
             &app.app,
             "POST",
-            "/api/admin/pages/home/publish",
+            &format!("/api/admin/pages/{}/publish", home.id),
             Some(&app.cookie),
             Some(&json!({"revision":2}))
         )
@@ -703,9 +709,15 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>)
-            .await
-            .status(),
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/original",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
@@ -893,4 +905,401 @@ async fn custom_auth_guards_cms_without_affecting_public_content() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+}
+
+async fn create_test_page(app: &TestApp, slug: &str) -> Page {
+    let response = call(
+        &app.app,
+        "POST",
+        "/api/admin/pages",
+        Some(&app.cookie),
+        Some(&json!({"title": slug, "slug": slug, "template_id": "homepage"})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    read(response).await
+}
+
+#[tokio::test]
+async fn moving_a_branch_updates_only_descendant_drafts_and_invalidates_stale_saves() {
+    let app = setup().await;
+    let mut parent = create_test_page(&app, "/about").await;
+    let child = create_test_page(&app, "/about/team").await;
+    let grandchild = create_test_page(&app, "/about/team/history").await;
+    let sibling = create_test_page(&app, "/about-us").await;
+    let published = call(
+        &app.app,
+        "POST",
+        &format!("/api/admin/pages/{}/publish", child.id),
+        Some(&app.cookie),
+        Some(&json!({"revision": child.revision})),
+    )
+    .await;
+    assert_eq!(published.status(), StatusCode::OK);
+    parent.slug = "/company".into();
+    let response = call(
+        &app.app,
+        "PUT",
+        &format!("/api/admin/pages/{}", parent.id),
+        Some(&app.cookie),
+        Some(&parent),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pages = bootstrap(&app).await.pages;
+    for (id, path, revision) in [
+        (&parent.id, "/company", 2),
+        (&child.id, "/company/team", 2),
+        (&grandchild.id, "/company/team/history", 2),
+        (&sibling.id, "/about-us", 1),
+    ] {
+        let page = pages.iter().find(|p| &p.id == id).unwrap();
+        assert_eq!(page.slug, path);
+        assert_eq!(page.revision, revision);
+    }
+    assert_eq!(
+        pages
+            .iter()
+            .find(|p| p.id == child.id)
+            .unwrap()
+            .published_revision,
+        Some(1)
+    );
+    let live: Content = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/about/team",
+            None,
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(live.page.slug, "/about/team");
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/company/team",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &format!("/api/admin/pages/{}", child.id),
+            Some(&app.cookie),
+            Some(&child)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "DELETE",
+            &format!("/api/admin/pages/{}", parent.id),
+            Some(&app.cookie),
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "DELETE",
+            &format!("/api/admin/pages/{}", sibling.id),
+            Some(&app.cookie),
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_atomically() {
+    let app = setup().await;
+    let parent = create_test_page(&app, "/a").await;
+    create_test_page(&app, "/a/team").await;
+    create_test_page(&app, "/destination/team").await;
+    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
+    for (path, status) in [
+        ("/a/nested".to_string(), StatusCode::BAD_REQUEST),
+        ("/destination".to_string(), StatusCode::CONFLICT),
+        (format!("/{}", "x".repeat(2045)), StatusCode::BAD_REQUEST),
+    ] {
+        let mut moved = parent.clone();
+        moved.slug = path;
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                &format!("/api/admin/pages/{}", parent.id),
+                Some(&app.cookie),
+                Some(&moved)
+            )
+            .await
+            .status(),
+            status
+        );
+        assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    }
+    let mut home = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.slug == "/")
+        .unwrap();
+    home.slug = "/moved-home".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &format!("/api/admin/pages/{}", home.id),
+            Some(&app.cookie),
+            Some(&home)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // Moving to a missing ancestor can overlap old subtree paths without a real collision.
+    let mut nested = create_test_page(&app, "/folder/branch").await;
+    let nested_child = create_test_page(&app, "/folder/branch/branch").await;
+    nested.slug = "/folder".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &format!("/api/admin/pages/{}", nested.id),
+            Some(&app.cookie),
+            Some(&nested)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        bootstrap(&app)
+            .await
+            .pages
+            .iter()
+            .find(|p| p.id == nested_child.id)
+            .unwrap()
+            .slug,
+        "/folder/branch"
+    );
+}
+
+fn edit_yaml(path: &std::path::Path, edit: impl FnOnce(&mut Value)) {
+    let mut value: Value = serde_yaml_ng::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    edit(&mut value["data"]);
+    std::fs::write(path, serde_yaml_ng::to_string(&value).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn cli_pull_push_round_trip_pages_are_opt_in_and_dry_run_rolls_back() {
+    use std::process::Command;
+    let app = setup().await;
+    let dir = tempfile::tempdir().unwrap();
+    let run = |command: &str, flags: &[&str]| {
+        let result = Command::new(env!("CARGO_BIN_EXE_baddiecore"))
+            .arg(command)
+            .arg(dir.path())
+            .args(flags)
+            .env("DATABASE_URL", &app.db.url)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    run("pull", &[]);
+    assert!(!dir.path().join("pages").exists());
+    let template_path = dir.path().join("templates/homepage.yaml");
+    let original = std::fs::read(&template_path).unwrap();
+    run("pull", &[]);
+    assert_eq!(std::fs::read(&template_path).unwrap(), original);
+    edit_yaml(&template_path, |v| {
+        v["description"] = json!("Reviewed in git")
+    });
+    run("push", &["--dry-run"]);
+    assert_ne!(
+        bootstrap(&app).await.templates[0].description,
+        "Reviewed in git"
+    );
+    run("push", &[]);
+    assert_eq!(
+        bootstrap(&app).await.templates[0].description,
+        "Reviewed in git"
+    );
+    run("pull", &["--pages", "--force"]);
+    let page_path = dir.path().join("pages/home.yaml");
+    let text = std::fs::read_to_string(&page_path).unwrap();
+    assert!(!text.contains("revision"));
+    let before = bootstrap(&app).await.pages[0].clone();
+    run("push", &["--pages"]);
+    assert_eq!(bootstrap(&app).await.pages[0], before);
+    edit_yaml(&page_path, |v| v["title"] = json!("Imported home"));
+    run("push", &[]);
+    assert_eq!(bootstrap(&app).await.pages[0], before);
+    run("push", &["--pages", "--dry-run"]);
+    assert_eq!(bootstrap(&app).await.pages[0], before);
+    run("push", &["--pages"]);
+    let after = bootstrap(&app).await.pages[0].clone();
+    assert_eq!(after.title, "Imported home");
+    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(after.published_revision, None);
+}
+
+#[tokio::test]
+async fn imports_validate_the_final_batch_and_preserve_live_snapshots() {
+    use baddiecore::serialization::{pull, push};
+    let app = setup().await;
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages/home/publish",
+            Some(&app.cookie),
+            Some(&json!({"revision": 1}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    pull(&pool, dir.path(), true, false).unwrap();
+    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
+    let component_path = dir.path().join("components/hero.yaml");
+    let page_path = dir.path().join("pages/home.yaml");
+    edit_yaml(&component_path, |v| {
+        v["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"new_field","label":"New field","kind":"text","required":true}))
+    });
+    // Schema-only push must not break a draft, even though the component write comes first.
+    assert!(push(&pool, dir.path(), false, false).is_err());
+    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    edit_yaml(&page_path, |v| {
+        v["blocks"][0]["fields"]["new_field"] = json!("Ready")
+    });
+    push(&pool, dir.path(), true, true).unwrap();
+    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    push(&pool, dir.path(), true, false).unwrap();
+    let updated = bootstrap(&app).await.pages[0].clone();
+    assert_eq!(updated.revision, 2);
+    assert_eq!(updated.published_revision, Some(1));
+    let live: Content =
+        read(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await).await;
+    assert_eq!(live.page.revision, 1);
+    assert!(!live.page.blocks[0].fields.contains_key("new_field"));
+    assert!(
+        !live
+            .components
+            .iter()
+            .find(|c| c.id == "hero")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|f| f.name == "new_field")
+    );
+    // Import definitions and a page into another initialized instance, retaining IDs.
+    let other = setup().await;
+    let other_pool = Pool::new(Opts::from_url(&other.db.url).unwrap()).unwrap();
+    push(&other_pool, dir.path(), true, false).unwrap();
+    let imported = bootstrap(&other).await.pages[0].clone();
+    assert_eq!(imported.id, "home");
+    assert_eq!(imported.blocks, updated.blocks);
+    assert_eq!(imported.published_revision, None);
+}
+
+#[tokio::test]
+async fn import_path_swaps_are_atomic_and_pull_requires_explicit_overwrites() {
+    use baddiecore::serialization::{pull, push};
+    let app = setup().await;
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let first = create_test_page(&app, "/first").await;
+    let second = create_test_page(&app, "/second").await;
+    let dir = tempfile::tempdir().unwrap();
+    pull(&pool, dir.path(), true, false).unwrap();
+    let first_file = dir.path().join(format!("pages/{}.yaml", first.id));
+    let second_file = dir.path().join(format!("pages/{}.yaml", second.id));
+    edit_yaml(&first_file, |v| v["slug"] = json!("/second"));
+    let edited = std::fs::read(&first_file).unwrap();
+    assert!(pull(&pool, dir.path(), true, false).is_err());
+    assert_eq!(std::fs::read(&first_file).unwrap(), edited);
+    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
+    assert!(push(&pool, dir.path(), true, false).is_err());
+    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    edit_yaml(&second_file, |v| v["slug"] = json!("/first"));
+    push(&pool, dir.path(), true, false).unwrap();
+    let pages = bootstrap(&app).await.pages;
+    assert_eq!(
+        pages.iter().find(|p| p.id == first.id).unwrap().slug,
+        "/second"
+    );
+    assert_eq!(
+        pages.iter().find(|p| p.id == second.id).unwrap().slug,
+        "/first"
+    );
+    // Missing files never delete database items.
+    std::fs::remove_file(&second_file).unwrap();
+    push(&pool, dir.path(), true, false).unwrap();
+    assert_eq!(bootstrap(&app).await.pages.len(), 3);
+    pull(&pool, dir.path(), true, true).unwrap();
+    assert_eq!(
+        call(
+            &app.app,
+            "DELETE",
+            &format!("/api/admin/pages/{}", first.id),
+            Some(&app.cookie),
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(pull(&pool, dir.path(), true, false).is_err());
+    pull(&pool, dir.path(), true, true).unwrap();
+    assert!(!first_file.exists());
+    assert!(second_file.exists());
+
+    // New definitions and pages can arrive together in an initialized instance.
+    let component_file = dir.path().join("components/git-component.yaml");
+    std::fs::copy(dir.path().join("components/text.yaml"), &component_file).unwrap();
+    edit_yaml(&component_file, |v| v["id"] = json!("git-component"));
+    let template_file = dir.path().join("templates/git-template.yaml");
+    std::fs::copy(dir.path().join("templates/homepage.yaml"), &template_file).unwrap();
+    edit_yaml(&template_file, |v| {
+        v["id"] = json!("git-template");
+        v["regions"][0]["allowed_components"] = json!(["git-component"]);
+    });
+    edit_yaml(&second_file, |v| v["template_id"] = json!("git-template"));
+    let other = setup().await;
+    let other_pool = Pool::new(Opts::from_url(&other.db.url).unwrap()).unwrap();
+    push(&other_pool, dir.path(), true, false).unwrap();
+    let imported = bootstrap(&other).await;
+    let imported_page = imported.pages.iter().find(|p| p.id == second.id).unwrap();
+    assert_eq!(imported_page.template_id, "git-template");
+    assert_eq!(imported_page.slug, "/first");
+    assert_eq!(imported_page.revision, 1);
+    assert_eq!(imported_page.published_revision, None);
+    assert!(imported.components.iter().any(|c| c.id == "git-component"));
+    assert!(imported.templates.iter().any(|t| t.id == "git-template"));
 }

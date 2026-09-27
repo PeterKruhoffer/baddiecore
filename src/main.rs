@@ -1,9 +1,22 @@
 use std::{env, net::SocketAddr, sync::Arc};
 
-use baddiecore::{AppState, auth::Auth, router};
+use baddiecore::{AppState, auth::Auth, router, serialization};
+use mysql::{Opts, Pool};
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "pull" || a == "push") {
+        serialization_cli(&args);
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--help" || a == "-h") {
+        print_serialization_help();
+        return;
+    }
+    if !args.is_empty() {
+        cli_fail("unknown command; use --help, or no arguments to start the server");
+    }
     let bind = bind_address(env::var("BADDIE_BIND").ok(), env::var("PORT").ok());
     let address: SocketAddr = bind.parse().unwrap_or_else(|_| {
         eprintln!("BADDIE_BIND is invalid");
@@ -35,6 +48,63 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
+
+fn serialization_cli(args: &[String]) {
+    let command = &args[0];
+    let mut directory = None;
+    let mut pages = false;
+    let mut force = false;
+    let mut dry_run = false;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--pages" => pages = true,
+            "--force" if command == "pull" => force = true,
+            "--dry-run" if command == "push" => dry_run = true,
+            "-h" | "--help" => {
+                print_serialization_help();
+                return;
+            }
+            value if !value.starts_with('-') && directory.is_none() => directory = Some(value),
+            _ => cli_fail("invalid arguments; use --help"),
+        }
+    }
+    let directory = std::path::Path::new(directory.unwrap_or("baddiecore-content"));
+    let url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| cli_fail("DATABASE_URL is required and must be a MySQL URL"));
+    let opts =
+        Opts::from_url(&url).unwrap_or_else(|_| cli_fail("DATABASE_URL must be a MySQL URL"));
+    let pool = Pool::new(opts).unwrap_or_else(|_| cli_fail("could not connect to MySQL"));
+    let result = if command == "pull" {
+        serialization::pull(&pool, directory, pages, force)
+    } else {
+        serialization::push(&pool, directory, pages, dry_run)
+    };
+    match result {
+        Ok(c) => println!(
+            "{} components, {} templates, {} pages{}",
+            c.components,
+            c.templates,
+            c.pages,
+            if dry_run {
+                " (dry run; no changes committed)"
+            } else {
+                ""
+            }
+        ),
+        Err(e) => cli_fail(&format!("{command} failed: {e}")),
+    }
+}
+
+fn print_serialization_help() {
+    println!(
+        "baddiecore pull [directory] [--pages] [--force]\n  Export components and templates. Pages are opt-in. Refuses changed files unless --force.\n\nbaddiecore push [directory] [--pages] [--dry-run]\n  Transactionally merge files without deleting or publishing. --dry-run validates and rolls back.\n\nDirectory defaults to baddiecore-content. DATABASE_URL must identify a directly accessible MySQL database."
+    );
+}
+
+fn cli_fail(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(2)
 }
 
 fn bind_address(bind: Option<String>, port: Option<String>) -> String {

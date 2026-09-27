@@ -78,7 +78,41 @@ The built-in implementations live in `src/auth.rs` and `src/auth/workos.rs`. Aut
 - Save draft keeps edits private. Publish saves and snapshots the page, template, and component definitions together. Later draft or schema edits do not alter that snapshot.
 - Concurrent page saves return a conflict instead of overwriting another revision. Template and component changes that would invalidate existing drafts are rejected.
 
+The Pages view is an expandable tree. Choose a parent and a URL segment when creating or moving a page. `/about/team` belongs under `/about`; paths are the hierarchy, with no separate parent IDs. Missing intermediate pages appear as folders, so existing nested URLs still work. Renaming or moving a page moves every descendant draft URL in one transaction and increments their revisions. A stale editor must reload before saving. The root page `/` cannot move, and a page with descendants cannot be deleted until those descendants are moved or deleted.
+
+Moving a draft does not change published URLs. Publish each affected page when ready; there are no automatic redirects or link rewrites.
+
 Paths use ASCII letters, numbers, hyphens, underscores, and slash-separated segments, up to 2048 bytes. Paths are case-sensitive. `/admin`, `/api`, `/health`, and `/assets` are reserved. Rules in this version govern placement, counts, required fields, and field types, not audience targeting or personalization.
+
+## Track content definitions in Git
+
+The same `baddiecore` binary runs the server and a local CLI. Start the CMS once to initialize its database. The CLI connects directly through `DATABASE_URL`, without editor authentication or a remote HTTP endpoint. Point it only at the local instance you intend to modify.
+
+```sh
+cargo run -- pull                         # components and templates → baddiecore-content/
+cargo run -- push --dry-run               # validate the entire import, then roll back
+cargo run -- push                         # files → local database drafts
+cargo run -- pull --pages --force         # also export pages, replacing local exports
+cargo run -- push --pages                 # explicitly import pages too
+```
+
+An optional directory follows `pull` or `push`. `pull` refuses differing existing files unless `--force` is supplied, whether the difference came from Git or the editor. Commit or stash local changes before forcing a pull. A forced pull also removes exported files for items no longer in the database, within the selected kinds. Without `--pages`, both commands leave page files and page content alone. Definition imports still validate existing pages.
+
+Each item has a versioned YAML file under `components/`, `templates/`, or `pages/`. Filenames use stable IDs, usually UUIDs; unusual IDs use a SHA-256 filename. Keep IDs and filenames unchanged when editing existing items. Output is deterministic, including sorted block field keys, and excludes revisions, publication metadata, snapshots, sessions, and credentials. Add the export directory to Git and review it normally. The CLI never commits or pushes to Git itself.
+
+`push` merges by ID in one transaction, validates references and all resulting page drafts, and leaves items missing from the files untouched. It does not delete or publish. Changed pages get the target database's next revision; unchanged pages keep theirs. YAML page paths describe the final tree, so when moving a branch in files, update its descendants too. There is no implicit cascade during import and no automatic merge with concurrent editorial changes. A successful dry run is not a reservation; push revalidates the database when it runs.
+
+For a container-based local instance, first run `docker compose up --build -d`, then use a one-off CLI container with the same database configuration and a bind-mounted export directory:
+
+```sh
+mkdir -p baddiecore-content
+docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+  --volume "$PWD/baddiecore-content:/content" cms baddiecore pull /content
+docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+  --volume "$PWD/baddiecore-content:/content" cms baddiecore push /content --dry-run
+```
+
+Remove `--dry-run` to apply. Add `--pages` when page content belongs in Git. The user override keeps files writable by your host account on Linux; this workflow also works with OrbStack. The running CMS sees imports on the next reload.
 
 ## Development
 
@@ -101,6 +135,7 @@ Vite+ proxies the API to the Rust server. A production build uses `pnpm --dir we
 # Example shape: mysql://root:<password>@127.0.0.1:3306
 cargo test --locked
 cargo clippy --all-targets -- -D warnings
+node --experimental-strip-types --test tests/page-tree.test.mjs
 pnpm --dir web run check
 pnpm --dir web run typecheck
 pnpm --dir web run build
@@ -118,4 +153,4 @@ Add renderer names to the Rust `Renderer` enum, the frontend `RendererName` type
 
 Run one CMS replica because sessions are process-local. Back up MySQL with `mysqldump --single-transaction` or Railway's database backups. Test restores before relying on backups. Tables use InnoDB. Database transactions serialize validation and writes through a lock row, including during overlapping deployments. Schema migration tooling beyond initial table creation is not yet included.
 
-Current limits include no media library, rich-text editor, localization, page hierarchy, roles, workflow approvals, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked; database operations are serialized.
+Current limits include no media library, rich-text editor, localization, roles, workflow approvals, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked; database operations are serialized.

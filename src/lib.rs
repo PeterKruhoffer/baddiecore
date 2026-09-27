@@ -21,6 +21,7 @@ use tower_http::{
 use uuid::Uuid;
 
 pub mod auth;
+pub mod serialization;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Field {
@@ -293,17 +294,7 @@ impl AppState {
     }
 
     fn transaction<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> Result<T>) -> Result<T> {
-        let mut conn = self.db.get_conn().map_err(db_error)?;
-        let mut tx = conn
-            .start_transaction(TxOpts::default())
-            .map_err(db_error)?;
-        // Serialize validation and writes, including overlapping deployments, just as
-        // the original single-connection store did. Errors roll back the whole operation.
-        tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
-            .map_err(db_error)?;
-        let result = f(&mut tx)?;
-        tx.commit().map_err(db_error)?;
-        Ok(result)
+        database_transaction(&self.db, f)
     }
 
     async fn run<T, F>(&self, f: F) -> Result<T>
@@ -321,6 +312,22 @@ impl AppState {
                 )
             })?
     }
+}
+
+fn database_transaction<T>(
+    db: &Pool,
+    f: impl FnOnce(&mut Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let mut conn = db.get_conn().map_err(db_error)?;
+    let mut tx = conn
+        .start_transaction(TxOpts::default())
+        .map_err(db_error)?;
+    // All server and CLI writes share the same lock. Errors roll back the batch.
+    tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
+        .map_err(db_error)?;
+    let result = f(&mut tx)?;
+    tx.commit().map_err(db_error)?;
+    Ok(result)
 }
 
 pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
@@ -441,6 +448,52 @@ async fn update_page(
             page.published_revision = old.published_revision;
             validate_page(db, &page)?;
             page.revision += 1;
+            if page.slug != old.slug {
+                if old.slug == "/" {
+                    return Err(ApiError::bad("the root page cannot be moved"));
+                }
+                if is_descendant(&page.slug, &old.slug) {
+                    return Err(ApiError::bad("a page cannot move into its own subtree"));
+                }
+                let mut pages: Vec<Page> = load_all(db, "pages")?;
+                let mut changed = Vec::new();
+                for child in &mut pages {
+                    if child.id == page.id {
+                        *child = page.clone();
+                    } else if is_descendant(&child.slug, &old.slug) {
+                        child.slug = format!(
+                            "{}{}",
+                            page.slug.trim_end_matches('/'),
+                            &child.slug[old.slug.len()..]
+                        );
+                        child.revision += 1;
+                        validate_slug(&child.slug)?;
+                        changed.push(child.clone());
+                    }
+                }
+                let mut paths = HashSet::new();
+                if pages.iter().any(|p| !paths.insert(&p.slug)) {
+                    return Err(ApiError::conflict("a destination path already exists"));
+                }
+                // Temporary non-public paths permit moves to an ancestor without
+                // transient unique-key collisions. Snapshots remain untouched.
+                changed.push(page.clone());
+                for item in &changed {
+                    db.exec_drop(
+                        "UPDATE pages SET slug=? WHERE id=?",
+                        (format!("__move_{}", item.id), &item.id),
+                    )
+                    .map_err(db_error)?;
+                }
+                for item in &changed {
+                    db.exec_drop(
+                        "UPDATE pages SET slug=?,data=? WHERE id=?",
+                        (&item.slug, json(item)?, &item.id),
+                    )
+                    .map_err(constraint_error)?;
+                }
+                return Ok(Json(page));
+            }
             db.exec_drop(
                 "UPDATE pages SET slug=?,data=? WHERE id=?",
                 (&page.slug, json(&page)?, id),
@@ -495,6 +548,11 @@ async fn delete_page(
 ) -> Result<StatusCode> {
     state
         .run(move |db| {
+            let page = require_page(db, &id)?;
+            let pages: Vec<Page> = load_all(db, "pages")?;
+            if pages.iter().any(|p| is_descendant(&p.slug, &page.slug)) {
+                return Err(ApiError::conflict("move or delete child pages first"));
+            }
             db.exec_drop("DELETE FROM pages WHERE id=?", (id,))
                 .map_err(db_error)?;
             if db.affected_rows() == 0 {
@@ -748,6 +806,14 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     }
     Ok(())
 }
+fn is_descendant(path: &str, parent: &str) -> bool {
+    path != parent
+        && (parent == "/"
+            || path
+                .strip_prefix(parent)
+                .is_some_and(|rest| rest.starts_with('/')))
+}
+
 fn validate_slug(value: &str) -> Result<()> {
     if value.len() > 2048 {
         return Err(ApiError::bad("slug must be at most 2048 bytes"));
