@@ -807,3 +807,90 @@ async fn health_checks_database_access() {
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
+
+#[tokio::test]
+async fn custom_auth_guards_cms_without_affecting_public_content() {
+    use baddiecore::auth::{AuthProvider, Authorization, Editor};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    struct CustomAuth {
+        allow: AtomicBool,
+        calls: AtomicUsize,
+    }
+    impl AuthProvider for CustomAuth {
+        fn routes(&self) -> Router {
+            Router::new().route(
+                "/api/auth/config",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"method":"redirect", "label":"Company login"}))
+                }),
+            )
+        }
+        fn authorize<'a>(&'a self, _: &'a axum::http::HeaderMap) -> Authorization<'a> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.allow.load(Ordering::SeqCst) {
+                    Ok(Editor {
+                        id: "custom-editor".into(),
+                    })
+                } else {
+                    Err(StatusCode::UNAUTHORIZED)
+                }
+            })
+        }
+    }
+    let db = TestDatabase::new();
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(CustomAuth {
+        allow: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+    });
+    let app = router(
+        AppState::open_with_auth(&db.url, provider.clone()).unwrap(),
+        dir.path(),
+    );
+    assert_eq!(
+        call(&app, "GET", "/api/auth/config", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "GET", "/api/content?slug=/", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        call(&app, "GET", "/api/admin/bootstrap", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    provider.allow.store(true, Ordering::SeqCst);
+    assert_eq!(
+        call(&app, "GET", "/api/admin/bootstrap", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/pages")
+                .header(header::HOST, "cms.example")
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+}

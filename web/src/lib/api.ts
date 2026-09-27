@@ -23,12 +23,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? (undefined as T) : response.json();
 }
 export const api = {
+  authConfig: () =>
+    request<{ method: "password" | "redirect"; label?: string }>("/api/auth/config"),
   login: (password: string) =>
     request<void>("/api/login", {
       method: "POST",
       body: JSON.stringify({ password }),
     }),
-  logout: () => request<void>("/api/logout", { method: "POST" }),
+  logout: () => request<{ redirect_url: string } | undefined>("/api/logout", { method: "POST" }),
   bootstrap: () => request<Bootstrap>("/api/admin/bootstrap"),
   content: (slug: string) => request<Content>(`/api/content?slug=${encodeURIComponent(slug)}`),
   createPage: (value: Pick<Page, "title" | "slug" | "template_id">) =>

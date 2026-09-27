@@ -1,27 +1,26 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::Arc,
 };
 
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, Query, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use axum_extra::extract::cookie::{Cookie, SameSite};
 use mysql::{Opts, Pool, Transaction, TxOpts, prelude::Queryable};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 use tower_http::{
     limit::RequestBodyLimitLayer,
     services::{ServeDir, ServeFile},
 };
 use uuid::Uuid;
+
+pub mod auth;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Field {
@@ -99,46 +98,7 @@ pub struct Content {
 #[derive(Clone)]
 pub struct AppState {
     db: Pool,
-    password: Arc<String>,
-    sessions: Arc<Mutex<SessionStore>>,
-    secure_cookie: bool,
-}
-
-const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
-const MAX_SESSIONS: usize = 128;
-
-#[derive(Default)]
-struct SessionStore {
-    tokens: HashMap<String, Instant>,
-}
-
-impl SessionStore {
-    fn insert(&mut self, token: String, now: Instant) {
-        self.prune(now);
-        if self.tokens.len() >= MAX_SESSIONS
-            && let Some(oldest) = self
-                .tokens
-                .iter()
-                .min_by_key(|(_, expires)| *expires)
-                .map(|(token, _)| token.clone())
-        {
-            self.tokens.remove(&oldest);
-        }
-        self.tokens.insert(token, now + SESSION_LIFETIME);
-    }
-
-    fn contains(&mut self, token: &str, now: Instant) -> bool {
-        self.prune(now);
-        self.tokens.contains_key(token)
-    }
-
-    fn remove(&mut self, token: &str) {
-        self.tokens.remove(token);
-    }
-
-    fn prune(&mut self, now: Instant) {
-        self.tokens.retain(|_, expires| *expires > now);
-    }
+    auth: Arc<dyn auth::AuthProvider>,
 }
 
 #[derive(Debug)]
@@ -167,9 +127,16 @@ impl AppState {
         password: String,
         secure_cookie: bool,
     ) -> std::result::Result<Self, String> {
-        if password.is_empty() {
-            return Err("BADDIE_ADMIN_PASSWORD must not be empty".into());
-        }
+        Self::open_with_auth(
+            database_url,
+            Arc::new(auth::Auth::password(password, secure_cookie)?),
+        )
+    }
+
+    pub fn open_with_auth(
+        database_url: &str,
+        auth: Arc<dyn auth::AuthProvider>,
+    ) -> std::result::Result<Self, String> {
         let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
         let db = Pool::new(opts).map_err(|_| "could not connect to MySQL")?;
         let mut conn = db.get_conn().map_err(|_| "could not connect to MySQL")?;
@@ -184,12 +151,7 @@ impl AppState {
             conn.query_drop(statement)
                 .map_err(|_| "could not initialize MySQL schema")?;
         }
-        let state = Self {
-            db,
-            password: Arc::new(password),
-            sessions: Default::default(),
-            secure_cookie,
-        };
+        let state = Self { db, auth };
         state.seed().map_err(|e| e.1)?;
         Ok(state)
     }
@@ -375,13 +337,12 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
     let index = static_dir.as_ref().join("index.html");
     Router::new()
         .route("/health", get(health))
-        .route("/api/login", post(login))
-        .route("/api/logout", post(logout))
         .route("/api/content", get(content))
         .nest("/api/admin", admin)
         .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
+        .with_state(state.clone())
+        .merge(state.auth.routes())
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
-        .with_state(state)
 }
 
 async fn health(State(state): State<AppState>) -> Result<StatusCode> {
@@ -396,114 +357,20 @@ async fn health(State(state): State<AppState>) -> Result<StatusCode> {
 async fn require_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    if request.method() != axum::http::Method::GET && !same_origin(&headers) {
+    if request.method() != axum::http::Method::GET && !auth::same_origin(&headers) {
         return ApiError(StatusCode::FORBIDDEN, "origin does not match host".into())
             .into_response();
     }
-    let token = cookie_value(&headers, "baddie_session");
-    if token
-        .as_ref()
-        .is_some_and(|t| state.sessions.lock().unwrap().contains(t, Instant::now()))
-    {
-        next.run(request).await
-    } else {
-        ApiError(StatusCode::UNAUTHORIZED, "authentication required".into()).into_response()
+    match state.auth.authorize(&headers).await {
+        Ok(editor) => {
+            request.extensions_mut().insert(editor);
+            next.run(request).await
+        }
+        Err(status) => ApiError(status, "authentication required".into()).into_response(),
     }
-}
-fn same_origin(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        return true;
-    };
-    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .is_some_and(|v| v == host)
-}
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| {
-            let (key, value) = part.trim().split_once('=')?;
-            (key == name).then(|| value.to_owned())
-        })
-}
-
-#[derive(Deserialize)]
-struct Login {
-    password: String,
-}
-async fn login(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<Login>,
-) -> Result<Response> {
-    if !same_origin(&headers) {
-        return Err(ApiError(
-            StatusCode::FORBIDDEN,
-            "origin does not match host".into(),
-        ));
-    }
-    if input
-        .password
-        .as_bytes()
-        .ct_eq(state.password.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "invalid password".into(),
-        ));
-    }
-    let token = Uuid::new_v4().to_string();
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(token.clone(), Instant::now());
-    let cookie = Cookie::build(("baddie_session", token))
-        .http_only(true)
-        .same_site(SameSite::Strict)
-        .path("/")
-        .secure(state.secure_cookie)
-        .build();
-    let value = HeaderValue::from_str(&cookie.to_string()).unwrap();
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(header::SET_COOKIE, value);
-    Ok(response)
-}
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    if !same_origin(&headers) {
-        return Err(ApiError(
-            StatusCode::FORBIDDEN,
-            "origin does not match host".into(),
-        ));
-    }
-    if let Some(token) = cookie_value(&headers, "baddie_session") {
-        state.sessions.lock().unwrap().remove(&token);
-    }
-    let mut cookie = Cookie::build(("baddie_session", ""))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Strict)
-        .secure(state.secure_cookie)
-        .build();
-    cookie.make_removal();
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie.to_string()).unwrap(),
-    );
-    Ok(response)
 }
 
 async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>> {
@@ -1003,24 +870,4 @@ fn title_case(value: &str) -> String {
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
         .replace('_', " ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sessions_expire_and_are_bounded() {
-        let start = Instant::now();
-        let mut sessions = SessionStore::default();
-        sessions.insert("expired".into(), start);
-        assert!(sessions.contains("expired", start + SESSION_LIFETIME - Duration::from_secs(1)));
-        assert!(!sessions.contains("expired", start + SESSION_LIFETIME));
-
-        for index in 0..=MAX_SESSIONS {
-            sessions.insert(index.to_string(), start + Duration::from_secs(index as u64));
-        }
-        assert_eq!(sessions.tokens.len(), MAX_SESSIONS);
-        assert!(!sessions.tokens.contains_key("0"));
-    }
 }

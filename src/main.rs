@@ -1,13 +1,9 @@
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, sync::Arc};
 
-use baddiecore::{AppState, router};
+use baddiecore::{AppState, auth::Auth, router};
 
 #[tokio::main]
 async fn main() {
-    let password = env::var("BADDIE_ADMIN_PASSWORD").unwrap_or_else(|_| {
-        eprintln!("BADDIE_ADMIN_PASSWORD is required");
-        std::process::exit(2)
-    });
     let bind = bind_address(env::var("BADDIE_BIND").ok(), env::var("PORT").ok());
     let address: SocketAddr = bind.parse().unwrap_or_else(|_| {
         eprintln!("BADDIE_BIND is invalid");
@@ -20,7 +16,11 @@ async fn main() {
     let static_dir = env::var("BADDIE_STATIC").unwrap_or_else(|_| "web/dist".into());
     let secure_cookie =
         env::var("BADDIE_SECURE_COOKIE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let state = AppState::open(&db, password, secure_cookie).unwrap_or_else(|e| {
+    let auth = Auth::from_env(secure_cookie).unwrap_or_else(|e| {
+        eprintln!("authentication configuration failed: {e}");
+        std::process::exit(2)
+    });
+    let state = AppState::open_with_auth(&db, Arc::new(auth)).unwrap_or_else(|e| {
         eprintln!("startup failed: {e}");
         std::process::exit(2)
     });

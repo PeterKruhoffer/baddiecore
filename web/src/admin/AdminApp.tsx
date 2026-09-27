@@ -236,9 +236,10 @@ export function AdminApp() {
               onClick={async () => {
                 if (!guard()) return;
                 try {
-                  await api.logout();
+                  const result = await api.logout();
                   setDirty(false);
                   setLoggedOut(true);
+                  if (result?.redirect_url) window.location.assign(result.redirect_url);
                 } catch {
                   await refetch();
                 }
