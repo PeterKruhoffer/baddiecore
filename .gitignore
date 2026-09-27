@@ -4,3 +4,4 @@
 /data/
 /.env
 /.amp/in/
+/.railway/node_modules/

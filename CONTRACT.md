@@ -1,6 +1,6 @@
 # First-version contract
 
-Rust Axum server, SQLite persistence, Solid 2 SPA. API JSON uses snake_case.
+Rust Axum server, MySQL 8.4 persistence, Solid 2 SPA. API JSON uses snake_case.
 
 ## Models
 
@@ -9,7 +9,7 @@ Rust Axum server, SQLite persistence, Solid 2 SPA. API JSON uses snake_case.
 - Region: `{name, allowed_components: string[], max_components: number}`. Maximum is positive. An empty allowed list permits no components.
 - Template: `{id, name, description, regions: Region[]}`
 - Block: `{id, component_id, region, fields: Record<string,string>}`
-- Page: `{id, title, slug, template_id, blocks: Block[], revision: number, published_revision: number | null}`. Slugs are absolute paths such as `/` and `/about`.
+- Page: `{id, title, slug, template_id, blocks: Block[], revision: number, published_revision: number | null}`. Slugs are case-sensitive absolute paths such as `/` and `/about`, at most 2048 bytes.
 - Bootstrap: `{pages: Page[], templates: Template[], components: Component[]}`
 
 ## API
@@ -27,9 +27,9 @@ All `/api/admin/*` require a signed-in session. Errors are `{error: string}` wit
 - `POST /api/admin/components` with Component excluding id returns Component, 201.
 - `PUT /api/admin/components/{id}` with Component validates existing drafts and returns Component. Reject changes that invalidate existing pages. Published snapshots remain unchanged.
 - `GET /api/content?slug=/about` public, returns `{page, template, components}` from immutable published snapshot, 404 for unpublished.
-- `GET /health` returns 200.
+- `GET /health` returns 200 when the database is accessible, 500 on database failure.
 
-Server serves frontend dist with SPA fallback. Editor path `/admin`; other paths render public pages. Frontend Vite proxy `/api` and `/health` to port 3000. Server defaults port 3000, `BADDIE_BIND` override; `BADDIE_DB` defaults `data/baddiecore.db`; `BADDIE_STATIC` defaults `web/dist`.
+Server serves frontend dist with SPA fallback. Editor path `/admin`; other paths render public pages. Frontend Vite proxy `/api` and `/health` to port 3000. `BADDIE_BIND` overrides the listener; otherwise `PORT` binds `0.0.0.0:$PORT`, or `127.0.0.1:3000` if absent. `DATABASE_URL` is a required MySQL connection URL; `BADDIE_STATIC` defaults `web/dist`. Tables use InnoDB, and each database operation runs in a transaction with a shared lock row to serialize validation and writes across connections. Run one CMS replica because sessions remain process-local.
 
 Seed idempotently on a new database: hero with eyebrow/title/body/button_label/button_url, text with title/body, callout with title/body/button_label/button_url, cards with title/body. Required title; other fields optional. Homepage template with main region allowing all components, maximum 20. Home page draft with hero and text, suitable editorial starter copy. IDs are arbitrary strings, frontend must discover them.
 

@@ -5,6 +5,7 @@ use axum::{
 };
 use baddiecore::{AppState, Bootstrap, Component, Content, Field, FieldKind, Page, router};
 use http_body_util::BodyExt;
+use mysql::{Opts, Pool, prelude::Queryable};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -12,17 +13,52 @@ use tower::ServiceExt;
 
 struct TestApp {
     _dir: TempDir,
-    path: std::path::PathBuf,
     app: Router,
     cookie: String,
+    db: TestDatabase,
+}
+
+struct TestDatabase {
+    admin: Pool,
+    name: String,
+    url: String,
+}
+
+impl TestDatabase {
+    fn new() -> Self {
+        let base = std::env::var("TEST_DATABASE_URL")
+            .expect("Set TEST_DATABASE_URL to a disposable MySQL server URL without a database or query string");
+        let opts = Opts::from_url(&base).expect("invalid TEST_DATABASE_URL");
+        assert!(opts.get_db_name().is_none() && !base.contains('?'));
+        let admin = Pool::new(opts).unwrap();
+        let name = format!("baddie_test_{}", uuid::Uuid::new_v4().simple());
+        admin
+            .get_conn()
+            .unwrap()
+            .query_drop(format!("CREATE DATABASE `{name}`"))
+            .unwrap();
+        let url = format!("{}/{name}", base.trim_end_matches('/'));
+        Self { admin, name, url }
+    }
+}
+
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        self.admin
+            .get_conn()
+            .unwrap()
+            .query_drop(format!("DROP DATABASE `{}`", self.name))
+            .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn spa_routes_serve_html_with_success_status() {
+    let db = TestDatabase::new();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "<html>CMS</html>").unwrap();
     let app = router(
-        AppState::open(dir.path().join("cms.db"), "secret".into(), false).unwrap(),
+        AppState::open(&db.url, "secret".into(), false).unwrap(),
         dir.path(),
     );
     for path in ["/admin", "/about/team"] {
@@ -36,9 +72,9 @@ async fn spa_routes_serve_html_with_success_status() {
 
 async fn setup() -> TestApp {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("cms.db");
+    let db = TestDatabase::new();
     let app = router(
-        AppState::open(&path, "secret".into(), false).unwrap(),
+        AppState::open(&db.url, "secret".into(), false).unwrap(),
         dir.path(),
     );
     let response = call(
@@ -59,9 +95,9 @@ async fn setup() -> TestApp {
         .to_owned();
     TestApp {
         _dir: dir,
-        path,
         app,
         cookie,
+        db,
     }
 }
 
@@ -349,7 +385,7 @@ async fn data_and_published_content_persist_after_reopen() {
     .await;
 
     let reopened = router(
-        AppState::open(&app.path, "new-secret".into(), false).unwrap(),
+        AppState::open(&app.db.url, "new-secret".into(), false).unwrap(),
         app._dir.path(),
     );
     let public: Content = read(
@@ -475,4 +511,299 @@ async fn url_safety_is_enforced() {
         assert_eq!(response.status(), StatusCode::OK, "rejected {url:?}");
         page = read(response).await;
     }
+}
+
+#[tokio::test]
+async fn mysql_paths_are_case_sensitive_and_bounded() {
+    let app = setup().await;
+    let longest = format!("/{}", "x".repeat(2047));
+    for slug in ["/About", "/about", longest.as_str()] {
+        let response = call(
+            &app.app,
+            "POST",
+            "/api/admin/pages",
+            Some(&app.cookie),
+            Some(&json!({"title":"Æøå 日本語 🦀", "slug":slug, "template_id":"homepage"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let page: Page = read(response).await;
+        let response = call(
+            &app.app,
+            "POST",
+            &format!("/api/admin/pages/{}/publish", page.id),
+            Some(&app.cookie),
+            Some(&json!({"revision":1})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let public: Content = read(
+            call(
+                &app.app,
+                "GET",
+                &format!("/api/content?slug={slug}"),
+                None,
+                None::<&Value>,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(public.page.id, page.id);
+        assert_eq!(public.page.title, "Æøå 日本語 🦀");
+    }
+    for (slug, expected) in [
+        ("/About".to_owned(), StatusCode::CONFLICT),
+        (format!("{longest}x"), StatusCode::BAD_REQUEST),
+    ] {
+        let response = call(
+            &app.app,
+            "POST",
+            "/api/admin/pages",
+            Some(&app.cookie),
+            Some(&json!({"title":"Duplicate", "slug":slug, "template_id":"homepage"})),
+        )
+        .await;
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn publish_conflict_rolls_back_and_delete_cascades() {
+    let app = setup().await;
+    let mut home = bootstrap(&app).await.pages.remove(0);
+    let response = call(
+        &app.app,
+        "POST",
+        "/api/admin/pages/home/publish",
+        Some(&app.cookie),
+        Some(&json!({"revision":1})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    home.slug = "/moved".into();
+    let response = call(
+        &app.app,
+        "PUT",
+        "/api/admin/pages/home",
+        Some(&app.cookie),
+        Some(&home),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = call(
+        &app.app,
+        "POST",
+        "/api/admin/pages",
+        Some(&app.cookie),
+        Some(&json!({"title":"Replacement", "slug":"/replacement", "template_id":"homepage"})),
+    )
+    .await;
+    let mut replacement: Page = read(response).await;
+    let publish = format!("/api/admin/pages/{}/publish", replacement.id);
+    let edit = format!("/api/admin/pages/{}", replacement.id);
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            &publish,
+            Some(&app.cookie),
+            Some(&json!({"revision":1}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    replacement.slug = "/".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &edit,
+            Some(&app.cookie),
+            Some(&replacement)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            &publish,
+            Some(&app.cookie),
+            Some(&json!({"revision":2}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let draft = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == replacement.id)
+        .unwrap();
+    assert_eq!(draft.published_revision, Some(1));
+    for (slug, id) in [("/", "home"), ("/replacement", replacement.id.as_str())] {
+        let public: Content = read(
+            call(
+                &app.app,
+                "GET",
+                &format!("/api/content?slug={slug}"),
+                None,
+                None::<&Value>,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(public.page.id, id);
+    }
+    // Moving the old publication releases the slug; the next publish succeeds.
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages/home/publish",
+            Some(&app.cookie),
+            Some(&json!({"revision":2}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            &publish,
+            Some(&app.cookie),
+            Some(&json!({"revision":2}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/replacement",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app.app, "DELETE", &edit, Some(&app.cookie), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app.app, "DELETE", &edit, Some(&app.cookie), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn concurrent_instances_cannot_overwrite_a_revision() {
+    let app = setup().await;
+    let other = router(
+        AppState::open(&app.db.url, "secret".into(), true).unwrap(),
+        app._dir.path(),
+    );
+    let login = call(
+        &other,
+        "POST",
+        "/api/login",
+        None,
+        Some(&json!({"password":"secret"})),
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains("Secure"));
+    let other_cookie = cookie.split(';').next().unwrap().to_owned();
+    let mut first = bootstrap(&app).await.pages.remove(0);
+    first.title = "First edit".into();
+    let mut second = first.clone();
+    second.title = "Second edit".into();
+    let (a, b) = tokio::join!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&first)
+        ),
+        call(
+            &other,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&other_cookie),
+            Some(&second)
+        ),
+    );
+    let winner = match (a.status(), b.status()) {
+        (StatusCode::OK, StatusCode::CONFLICT) => first.title,
+        (StatusCode::CONFLICT, StatusCode::OK) => second.title,
+        statuses => panic!("unexpected save results: {statuses:?}"),
+    };
+    let saved = bootstrap(&app).await.pages.remove(0);
+    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.title, winner);
+}
+
+#[test]
+fn failed_seed_rolls_back_all_inserts() {
+    let db = TestDatabase::new();
+    drop(AppState::open(&db.url, "secret".into(), false).unwrap());
+    let pool = Pool::new(Opts::from_url(&db.url).unwrap()).unwrap();
+    let mut conn = pool.get_conn().unwrap();
+    for statement in [
+        "DELETE FROM pages",
+        "DELETE FROM templates",
+        "DELETE FROM components",
+        "INSERT INTO templates(id,data) VALUES('homepage','{}')",
+    ] {
+        conn.query_drop(statement).unwrap();
+    }
+    assert!(AppState::open(&db.url, "secret".into(), false).is_err());
+    assert_eq!(
+        conn.query_first::<i64, _>("SELECT COUNT(*) FROM components")
+            .unwrap(),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn health_checks_database_access() {
+    let app = setup().await;
+    assert_eq!(
+        call(&app.app, "GET", "/health", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    pool.get_conn()
+        .unwrap()
+        .query_drop("DROP TABLE cms_lock")
+        .unwrap();
+    assert_eq!(
+        call(&app.app, "GET", "/health", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
 }

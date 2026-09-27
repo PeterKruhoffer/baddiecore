@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post, put},
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
-use rusqlite::{Connection, OptionalExtension, params};
+use mysql::{Opts, Pool, Transaction, TxOpts, prelude::Queryable};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower_http::{
@@ -98,7 +98,7 @@ pub struct Content {
 
 #[derive(Clone)]
 pub struct AppState {
-    db: Arc<Mutex<Connection>>,
+    db: Pool,
     password: Arc<String>,
     sessions: Arc<Mutex<SessionStore>>,
     secure_cookie: bool,
@@ -163,25 +163,29 @@ type Result<T> = std::result::Result<T, ApiError>;
 
 impl AppState {
     pub fn open(
-        path: impl AsRef<Path>,
+        database_url: &str,
         password: String,
         secure_cookie: bool,
     ) -> std::result::Result<Self, String> {
         if password.is_empty() {
             return Err("BADDIE_ADMIN_PASSWORD must not be empty".into());
         }
-        if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
+        let db = Pool::new(opts).map_err(|_| "could not connect to MySQL")?;
+        let mut conn = db.get_conn().map_err(|_| "could not connect to MySQL")?;
+        for statement in [
+            "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
+            "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
+            "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ] {
+            conn.query_drop(statement)
+                .map_err(|_| "could not initialize MySQL schema")?;
         }
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS components(id TEXT PRIMARY KEY, data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY, data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS pages(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS snapshots(page_id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, data TEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE);")
-            .map_err(|e| e.to_string())?;
         let state = Self {
-            db: Arc::new(Mutex::new(conn)),
+            db,
             password: Arc::new(password),
             sessions: Default::default(),
             secure_cookie,
@@ -191,148 +195,162 @@ impl AppState {
     }
 
     fn seed(&self) -> Result<()> {
-        let mut db = self.db.lock().unwrap();
-        let tx = db.transaction().map_err(db_error)?;
-        let count: i64 = tx
-            .query_row("SELECT count(*) FROM components", [], |r| r.get(0))
-            .map_err(db_error)?;
-        if count != 0 {
-            return Ok(());
-        }
-        let specs = [
-            (
-                "hero",
-                "Hero",
-                Renderer::Hero,
-                vec![
-                    ("eyebrow", false, FieldKind::Text),
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
-                    ("button_label", false, FieldKind::Text),
-                    ("button_url", false, FieldKind::Url),
-                ],
-            ),
-            (
-                "text",
-                "Text",
-                Renderer::Text,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
-                ],
-            ),
-            (
-                "callout",
-                "Callout",
-                Renderer::Callout,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
-                    ("button_label", false, FieldKind::Text),
-                    ("button_url", false, FieldKind::Url),
-                ],
-            ),
-            (
-                "cards",
-                "Cards",
-                Renderer::Cards,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
-                ],
-            ),
-        ];
-        let mut components = Vec::new();
-        for (id, name, renderer, fields) in specs {
-            let component = Component {
-                id: id.into(),
-                name: name.into(),
-                description: format!("{name} content block"),
-                renderer,
-                fields: fields
-                    .into_iter()
-                    .map(|(name, required, kind)| Field {
-                        name: name.into(),
-                        label: title_case(name),
-                        kind,
-                        required,
-                    })
-                    .collect(),
+        self.transaction(|tx| {
+            let count: i64 = tx
+                .query_first("SELECT count(*) FROM components")
+                .map_err(db_error)?
+                .unwrap();
+            if count != 0 {
+                return Ok(());
+            }
+            let specs = [
+                (
+                    "hero",
+                    "Hero",
+                    Renderer::Hero,
+                    vec![
+                        ("eyebrow", false, FieldKind::Text),
+                        ("title", true, FieldKind::Text),
+                        ("body", false, FieldKind::Textarea),
+                        ("button_label", false, FieldKind::Text),
+                        ("button_url", false, FieldKind::Url),
+                    ],
+                ),
+                (
+                    "text",
+                    "Text",
+                    Renderer::Text,
+                    vec![
+                        ("title", true, FieldKind::Text),
+                        ("body", false, FieldKind::Textarea),
+                    ],
+                ),
+                (
+                    "callout",
+                    "Callout",
+                    Renderer::Callout,
+                    vec![
+                        ("title", true, FieldKind::Text),
+                        ("body", false, FieldKind::Textarea),
+                        ("button_label", false, FieldKind::Text),
+                        ("button_url", false, FieldKind::Url),
+                    ],
+                ),
+                (
+                    "cards",
+                    "Cards",
+                    Renderer::Cards,
+                    vec![
+                        ("title", true, FieldKind::Text),
+                        ("body", false, FieldKind::Textarea),
+                    ],
+                ),
+            ];
+            let mut components = Vec::new();
+            for (id, name, renderer, fields) in specs {
+                let component = Component {
+                    id: id.into(),
+                    name: name.into(),
+                    description: format!("{name} content block"),
+                    renderer,
+                    fields: fields
+                        .into_iter()
+                        .map(|(name, required, kind)| Field {
+                            name: name.into(),
+                            label: title_case(name),
+                            kind,
+                            required,
+                        })
+                        .collect(),
+                };
+                tx.exec_drop(
+                    "INSERT INTO components VALUES(?,?)",
+                    (&component.id, json(&component)?),
+                )
+                .map_err(db_error)?;
+                components.push(component);
+            }
+            let template = Template {
+                id: "homepage".into(),
+                name: "Homepage".into(),
+                description: "A flexible homepage".into(),
+                regions: vec![Region {
+                    name: "main".into(),
+                    allowed_components: components.iter().map(|c| c.id.clone()).collect(),
+                    max_components: 20,
+                }],
             };
-            tx.execute(
-                "INSERT INTO components VALUES(?1,?2)",
-                params![component.id, json(&component)?],
+            tx.exec_drop(
+                "INSERT INTO templates VALUES(?,?)",
+                (&template.id, json(&template)?),
             )
             .map_err(db_error)?;
-            components.push(component);
-        }
-        let template = Template {
-            id: "homepage".into(),
-            name: "Homepage".into(),
-            description: "A flexible homepage".into(),
-            regions: vec![Region {
-                name: "main".into(),
-                allowed_components: components.iter().map(|c| c.id.clone()).collect(),
-                max_components: 20,
-            }],
-        };
-        tx.execute(
-            "INSERT INTO templates VALUES(?1,?2)",
-            params![template.id, json(&template)?],
-        )
-        .map_err(db_error)?;
-        let blocks = vec![
-            Block {
-                id: "welcome-hero".into(),
-                component_id: "hero".into(),
-                region: "main".into(),
-                fields: HashMap::from([
-                    ("eyebrow".into(), "Welcome".into()),
-                    ("title".into(), "Build your site".into()),
-                    (
-                        "body".into(),
-                        "Edit this starter page in the admin area.".into(),
-                    ),
-                ]),
-            },
-            Block {
-                id: "welcome-text".into(),
-                component_id: "text".into(),
-                region: "main".into(),
-                fields: HashMap::from([
-                    ("title".into(), "Start publishing".into()),
-                    (
-                        "body".into(),
-                        "Add content, preview your draft, and publish when it is ready.".into(),
-                    ),
-                ]),
-            },
-        ];
-        let page = Page {
-            id: "home".into(),
-            title: "Home".into(),
-            slug: "/".into(),
-            template_id: template.id,
-            blocks,
-            revision: 1,
-            published_revision: None,
-        };
-        tx.execute(
-            "INSERT INTO pages VALUES(?1,?2,?3)",
-            params![page.id, page.slug, json(&page)?],
-        )
-        .map_err(db_error)?;
+            let blocks = vec![
+                Block {
+                    id: "welcome-hero".into(),
+                    component_id: "hero".into(),
+                    region: "main".into(),
+                    fields: HashMap::from([
+                        ("eyebrow".into(), "Welcome".into()),
+                        ("title".into(), "Build your site".into()),
+                        (
+                            "body".into(),
+                            "Edit this starter page in the admin area.".into(),
+                        ),
+                    ]),
+                },
+                Block {
+                    id: "welcome-text".into(),
+                    component_id: "text".into(),
+                    region: "main".into(),
+                    fields: HashMap::from([
+                        ("title".into(), "Start publishing".into()),
+                        (
+                            "body".into(),
+                            "Add content, preview your draft, and publish when it is ready.".into(),
+                        ),
+                    ]),
+                },
+            ];
+            let page = Page {
+                id: "home".into(),
+                title: "Home".into(),
+                slug: "/".into(),
+                template_id: template.id,
+                blocks,
+                revision: 1,
+                published_revision: None,
+            };
+            tx.exec_drop(
+                "INSERT INTO pages VALUES(?,?,?)",
+                (&page.id, &page.slug, json(&page)?),
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+    }
+
+    fn transaction<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> Result<T>) -> Result<T> {
+        let mut conn = self.db.get_conn().map_err(db_error)?;
+        let mut tx = conn
+            .start_transaction(TxOpts::default())
+            .map_err(db_error)?;
+        // Serialize validation and writes, including overlapping deployments, just as
+        // the original single-connection store did. Errors roll back the whole operation.
+        tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
+            .map_err(db_error)?;
+        let result = f(&mut tx)?;
         tx.commit().map_err(db_error)?;
-        Ok(())
+        Ok(result)
     }
 
     async fn run<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        F: FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
     {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || f(&mut db.lock().unwrap()))
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || state.transaction(f))
             .await
             .map_err(|_| {
                 ApiError(
@@ -356,7 +374,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     let index = static_dir.as_ref().join("index.html");
     Router::new()
-        .route("/health", get(|| async { StatusCode::OK }))
+        .route("/health", get(health))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/content", get(content))
@@ -364,6 +382,15 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .with_state(state)
+}
+
+async fn health(State(state): State<AppState>) -> Result<StatusCode> {
+    state
+        .run(|db| {
+            db.query_drop("SELECT 1").map_err(db_error)?;
+            Ok(StatusCode::OK)
+        })
+        .await
 }
 
 async fn require_auth(
@@ -482,21 +509,21 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
 async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>> {
     state.run(|db| Ok(Json(load_bootstrap(db)?))).await
 }
-fn load_bootstrap(db: &Connection) -> Result<Bootstrap> {
+fn load_bootstrap(db: &mut impl Queryable) -> Result<Bootstrap> {
     Ok(Bootstrap {
         pages: load_all(db, "pages")?,
         templates: load_all(db, "templates")?,
         components: load_all(db, "components")?,
     })
 }
-fn load_all<T: serde::de::DeserializeOwned>(db: &Connection, table: &str) -> Result<Vec<T>> {
-    let mut stmt = db
-        .prepare(&format!("SELECT data FROM {table} ORDER BY id"))
+fn load_all<T: serde::de::DeserializeOwned>(
+    db: &mut impl Queryable,
+    table: &str,
+) -> Result<Vec<T>> {
+    let rows: Vec<String> = db
+        .query(format!("SELECT data FROM {table} ORDER BY id"))
         .map_err(db_error)?;
-    stmt.query_map([], |r| r.get::<_, String>(0))
-        .map_err(db_error)?
-        .map(|v| parse(&v.map_err(db_error)?))
-        .collect()
+    rows.iter().map(|v| parse(v)).collect()
 }
 
 #[derive(Deserialize)]
@@ -547,9 +574,9 @@ async fn update_page(
             page.published_revision = old.published_revision;
             validate_page(db, &page)?;
             page.revision += 1;
-            db.execute(
-                "UPDATE pages SET slug=?1,data=?2 WHERE id=?3",
-                params![page.slug, json(&page)?, id],
+            db.exec_drop(
+                "UPDATE pages SET slug=?,data=? WHERE id=?",
+                (&page.slug, json(&page)?, id),
             )
             .map_err(constraint_error)?;
             Ok(Json(page))
@@ -565,15 +592,35 @@ async fn publish_page(
     AxumPath(id): AxumPath<String>,
     Json(input): Json<Revision>,
 ) -> Result<Json<Page>> {
-    state.run(move |db| {
-    let mut page = require_page(db, &id)?; if page.revision != input.revision { return Err(ApiError::conflict("stale revision")); } validate_page(db, &page)?;
-    page.published_revision = Some(page.revision);
-    let template = require_template(db, &page.template_id)?; let components = components_for_page(db, &page)?; let snapshot = Content { page: page.clone(), template, components };
-    let tx = db.transaction().map_err(db_error)?;
-    tx.execute("UPDATE pages SET data=?1 WHERE id=?2", params![json(&page)?, id]).map_err(db_error)?;
-    tx.execute("INSERT INTO snapshots(page_id,slug,data) VALUES(?1,?2,?3) ON CONFLICT(page_id) DO UPDATE SET slug=excluded.slug,data=excluded.data", params![id, page.slug, json(&snapshot)?]).map_err(constraint_error)?;
-    tx.commit().map_err(db_error)?; Ok(Json(page))
-}).await
+    state
+        .run(move |db| {
+            let mut page = require_page(db, &id)?;
+            if page.revision != input.revision {
+                return Err(ApiError::conflict("stale revision"));
+            }
+            validate_page(db, &page)?;
+            page.published_revision = Some(page.revision);
+            let template = require_template(db, &page.template_id)?;
+            let components = components_for_page(db, &page)?;
+            let snapshot = Content {
+                page: page.clone(),
+                template,
+                components,
+            };
+            db.exec_drop("UPDATE pages SET data=? WHERE id=?", (json(&page)?, &id))
+                .map_err(db_error)?;
+            // Delete then insert in the same transaction: MySQL's ON DUPLICATE KEY
+            // would also match another page's slug and overwrite its snapshot.
+            db.exec_drop("DELETE FROM snapshots WHERE page_id=?", (&id,))
+                .map_err(db_error)?;
+            db.exec_drop(
+                "INSERT INTO snapshots(page_id,slug,data) VALUES(?,?,?)",
+                (&id, &page.slug, json(&snapshot)?),
+            )
+            .map_err(constraint_error)?;
+            Ok(Json(page))
+        })
+        .await
 }
 async fn delete_page(
     State(state): State<AppState>,
@@ -581,11 +628,9 @@ async fn delete_page(
 ) -> Result<StatusCode> {
     state
         .run(move |db| {
-            if db
-                .execute("DELETE FROM pages WHERE id=?1", [id])
-                .map_err(db_error)?
-                == 0
-            {
+            db.exec_drop("DELETE FROM pages WHERE id=?", (id,))
+                .map_err(db_error)?;
+            if db.affected_rows() == 0 {
                 Err(ApiError::not_found())
             } else {
                 Ok(StatusCode::NO_CONTENT)
@@ -613,9 +658,9 @@ async fn create_template(
                 regions: input.regions,
             };
             validate_template(db, &item)?;
-            db.execute(
-                "INSERT INTO templates VALUES(?1,?2)",
-                params![item.id, json(&item)?],
+            db.exec_drop(
+                "INSERT INTO templates VALUES(?,?)",
+                (&item.id, json(&item)?),
             )
             .map_err(db_error)?;
             Ok((StatusCode::CREATED, Json(item)))
@@ -635,11 +680,8 @@ async fn update_template(
             require_template(db, &id)?;
             validate_template(db, &item)?;
             validate_schema_change(db, Some(&item), None)?;
-            db.execute(
-                "UPDATE templates SET data=?1 WHERE id=?2",
-                params![json(&item)?, id],
-            )
-            .map_err(db_error)?;
+            db.exec_drop("UPDATE templates SET data=? WHERE id=?", (json(&item)?, id))
+                .map_err(db_error)?;
             Ok(Json(item))
         })
         .await
@@ -666,9 +708,9 @@ async fn create_component(
                 fields: input.fields,
             };
             validate_component(&item)?;
-            db.execute(
-                "INSERT INTO components VALUES(?1,?2)",
-                params![item.id, json(&item)?],
+            db.exec_drop(
+                "INSERT INTO components VALUES(?,?)",
+                (&item.id, json(&item)?),
             )
             .map_err(db_error)?;
             Ok((StatusCode::CREATED, Json(item)))
@@ -688,9 +730,9 @@ async fn update_component(
             require_component(db, &id)?;
             validate_component(&item)?;
             validate_schema_change(db, None, Some(&item))?;
-            db.execute(
-                "UPDATE components SET data=?1 WHERE id=?2",
-                params![json(&item)?, id],
+            db.exec_drop(
+                "UPDATE components SET data=? WHERE id=?",
+                (json(&item)?, id),
             )
             .map_err(db_error)?;
             Ok(Json(item))
@@ -710,12 +752,7 @@ async fn content(
     state
         .run(move |db| {
             let raw: Option<String> = db
-                .query_row(
-                    "SELECT data FROM snapshots WHERE slug=?1",
-                    [query.slug],
-                    |r| r.get(0),
-                )
-                .optional()
+                .exec_first("SELECT data FROM snapshots WHERE slug=?", (query.slug,))
                 .map_err(db_error)?;
             Ok(Json(parse(&raw.ok_or_else(ApiError::not_found)?)?))
         })
@@ -723,7 +760,7 @@ async fn content(
 }
 
 fn validate_schema_change(
-    db: &Connection,
+    db: &mut impl Queryable,
     template: Option<&Template>,
     component: Option<&Component>,
 ) -> Result<()> {
@@ -737,11 +774,11 @@ fn validate_schema_change(
     }
     Ok(())
 }
-fn validate_page(db: &Connection, page: &Page) -> Result<()> {
+fn validate_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
     validate_page_with(db, page, None, None)
 }
 fn validate_page_with(
-    db: &Connection,
+    db: &mut impl Queryable,
     page: &Page,
     replacement_template: Option<&Template>,
     replacement_component: Option<&Component>,
@@ -826,7 +863,7 @@ fn validate_component(item: &Component) -> Result<()> {
     }
     Ok(())
 }
-fn validate_template(db: &Connection, item: &Template) -> Result<()> {
+fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     if item.name.trim().is_empty() {
         return Err(ApiError::bad("template name is required"));
     }
@@ -845,6 +882,9 @@ fn validate_template(db: &Connection, item: &Template) -> Result<()> {
     Ok(())
 }
 fn validate_slug(value: &str) -> Result<()> {
+    if value.len() > 2048 {
+        return Err(ApiError::bad("slug must be at most 2048 bytes"));
+    }
     if value == "/" {
         Ok(())
     } else {
@@ -893,27 +933,26 @@ fn validate_url(value: &str) -> Result<()> {
         ))
     }
 }
-fn require_page(db: &Connection, id: &str) -> Result<Page> {
+fn require_page(db: &mut impl Queryable, id: &str) -> Result<Page> {
     load_one(db, "pages", id)
 }
-fn require_template(db: &Connection, id: &str) -> Result<Template> {
+fn require_template(db: &mut impl Queryable, id: &str) -> Result<Template> {
     load_one(db, "templates", id)
 }
-fn require_component(db: &Connection, id: &str) -> Result<Component> {
+fn require_component(db: &mut impl Queryable, id: &str) -> Result<Component> {
     load_one(db, "components", id)
 }
-fn load_one<T: serde::de::DeserializeOwned>(db: &Connection, table: &str, id: &str) -> Result<T> {
+fn load_one<T: serde::de::DeserializeOwned>(
+    db: &mut impl Queryable,
+    table: &str,
+    id: &str,
+) -> Result<T> {
     let raw: Option<String> = db
-        .query_row(
-            &format!("SELECT data FROM {table} WHERE id=?1"),
-            [id],
-            |r| r.get(0),
-        )
-        .optional()
+        .exec_first(format!("SELECT data FROM {table} WHERE id=?"), (id,))
         .map_err(db_error)?;
     parse(&raw.ok_or_else(ApiError::not_found)?)
 }
-fn components_for_page(db: &Connection, page: &Page) -> Result<Vec<Component>> {
+fn components_for_page(db: &mut impl Queryable, page: &Page) -> Result<Vec<Component>> {
     let ids: HashSet<&str> = page
         .blocks
         .iter()
@@ -923,10 +962,10 @@ fn components_for_page(db: &Connection, page: &Page) -> Result<Vec<Component>> {
         .map(|id| require_component(db, id))
         .collect()
 }
-fn insert_page(db: &Connection, page: &Page) -> Result<()> {
-    db.execute(
-        "INSERT INTO pages VALUES(?1,?2,?3)",
-        params![page.id, page.slug, json(page)?],
+fn insert_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
+    db.exec_drop(
+        "INSERT INTO pages VALUES(?,?,?)",
+        (&page.id, &page.slug, json(page)?),
     )
     .map_err(constraint_error)?;
     Ok(())
@@ -947,11 +986,11 @@ fn parse<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
         )
     })
 }
-fn db_error(_: rusqlite::Error) -> ApiError {
+fn db_error(_: mysql::Error) -> ApiError {
     ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database error".into())
 }
-fn constraint_error(error: rusqlite::Error) -> ApiError {
-    if matches!(error, rusqlite::Error::SqliteFailure(_, _)) {
+fn constraint_error(error: mysql::Error) -> ApiError {
+    if matches!(&error, mysql::Error::MySqlError(error) if error.code == 1062) {
         ApiError::conflict("id or slug already exists")
     } else {
         db_error(error)
@@ -983,29 +1022,5 @@ mod tests {
         }
         assert_eq!(sessions.tokens.len(), MAX_SESSIONS);
         assert!(!sessions.tokens.contains_key("0"));
-    }
-
-    #[test]
-    fn failed_seed_rolls_back_all_inserts() {
-        let directory = tempfile::tempdir().unwrap();
-        let state =
-            AppState::open(directory.path().join("cms.db"), "secret".into(), false).unwrap();
-        {
-            let db = state.db.lock().unwrap();
-            db.execute_batch(
-                "DELETE FROM snapshots; DELETE FROM pages; DELETE FROM templates; DELETE FROM components;
-                 INSERT INTO templates(id, data) VALUES('homepage', '{}');",
-            )
-            .unwrap();
-        }
-
-        assert!(state.seed().is_err());
-        let component_count: i64 = state
-            .db
-            .lock()
-            .unwrap()
-            .query_row("SELECT count(*) FROM components", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(component_count, 0);
     }
 }

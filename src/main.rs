@@ -8,16 +8,19 @@ async fn main() {
         eprintln!("BADDIE_ADMIN_PASSWORD is required");
         std::process::exit(2)
     });
-    let bind = env::var("BADDIE_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let bind = bind_address(env::var("BADDIE_BIND").ok(), env::var("PORT").ok());
     let address: SocketAddr = bind.parse().unwrap_or_else(|_| {
         eprintln!("BADDIE_BIND is invalid");
         std::process::exit(2)
     });
-    let db = env::var("BADDIE_DB").unwrap_or_else(|_| "data/baddiecore.db".into());
+    let db = env::var("DATABASE_URL").unwrap_or_else(|_| {
+        eprintln!("DATABASE_URL is required and must be a MySQL URL");
+        std::process::exit(2)
+    });
     let static_dir = env::var("BADDIE_STATIC").unwrap_or_else(|_| "web/dist".into());
     let secure_cookie =
         env::var("BADDIE_SECURE_COOKIE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let state = AppState::open(db, password, secure_cookie).unwrap_or_else(|e| {
+    let state = AppState::open(&db, password, secure_cookie).unwrap_or_else(|e| {
         eprintln!("startup failed: {e}");
         std::process::exit(2)
     });
@@ -34,6 +37,13 @@ async fn main() {
         .unwrap();
 }
 
+fn bind_address(bind: Option<String>, port: Option<String>) -> String {
+    bind.unwrap_or_else(|| match port {
+        Some(port) => format!("0.0.0.0:{port}"),
+        None => "127.0.0.1:3000".into(),
+    })
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -48,5 +58,20 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn railway_port_and_explicit_bind() {
+        assert_eq!(bind_address(None, None), "127.0.0.1:3000");
+        assert_eq!(bind_address(None, Some("8123".into())), "0.0.0.0:8123");
+        assert_eq!(
+            bind_address(Some("127.0.0.1:4567".into()), Some("8123".into())),
+            "127.0.0.1:4567"
+        );
     }
 }
