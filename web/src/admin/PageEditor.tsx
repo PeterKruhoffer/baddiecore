@@ -1,5 +1,386 @@
-import { createSignal, For, Show } from "solid-js";import type { Block, ComponentDef, Page, Region, Template } from "../types";import { BlockRenderer } from "../components/Renderer";
-type Props={page:Page;templates:Template[];components:ComponentDef[];onSave:(p:Page)=>Promise<Page>;onPublish:(p:Page)=>Promise<Page>;onDelete:(p:Page)=>Promise<void>;onDirty:(dirty:boolean)=>void};
-export function PageEditor(p:Props){const [draft,setDraft]=createSignal(structuredClone(p.page));const [selected,setSelected]=createSignal<string>();const [mobile,setMobile]=createSignal(false);const [busy,setBusy]=createSignal("");const [error,setError]=createSignal("");let dragged:string|undefined;const template=()=>p.templates.find(t=>t.id===draft().template_id);const update=(value:Page)=>{setDraft(value);p.onDirty(true)};const blocks=(r:string)=>draft().blocks.filter(b=>b.region===r);function add(region:Region,id:string){if(blocks(region.name).length>=region.max_components)return setError(`${region.name} allows up to ${region.max_components} components.`);const def=p.components.find(c=>c.id===id);if(!def||!region.allowed_components.includes(id))return setError("That component is not allowed in this region.");const block:Block={id:crypto.randomUUID(),component_id:id,region:region.name,fields:Object.fromEntries(def.fields.map(f=>[f.name,""]))};update({...draft(),blocks:[...draft().blocks,block]});setSelected(block.id);setError("")}
-function move(id:string,delta:number){const region=draft().blocks.find(b=>b.id===id)?.region;if(!region)return;const indexes=draft().blocks.map((b,i)=>b.region===region?i:-1).filter(i=>i>=0),at=indexes.findIndex(i=>draft().blocks[i].id===id),swap=indexes[at+delta];if(swap===undefined)return;const copy=[...draft().blocks],own=indexes[at];[copy[own],copy[swap]]=[copy[swap],copy[own]];update({...draft(),blocks:copy})}function remove(id:string){update({...draft(),blocks:draft().blocks.filter(b=>b.id!==id)});setSelected(undefined)}async function act(name:string,fn:()=>Promise<Page>){setBusy(name);setError("");try{const saved=await fn();setDraft(structuredClone(saved));p.onDirty(false)}catch(e){setError(e instanceof Error?e.message:"Request failed")}finally{setBusy("")}}
-const active=()=>draft().blocks.find(b=>b.id===selected());return <section class="editor"><header class="editor-head"><div><p class="eyebrow">Page editor</p><input class="title-input" aria-label="Page title" value={draft().title} onInput={e=>update({...draft(),title:e.currentTarget.value})}/><input class="slug-input" aria-label="Page path" value={draft().slug} onInput={e=>update({...draft(),slug:e.currentTarget.value})}/></div><div class="actions"><span class="status">{draft().published_revision===draft().revision?"Published":"Draft changes"}</span><button disabled={!!busy()} onClick={()=>act("save",()=>p.onSave(draft()))}>{busy()==="save"?"Saving…":"Save draft"}</button><button class="primary" disabled={!!busy()} onClick={()=>act("publish",async()=>{const saved=await p.onSave(draft());return p.onPublish(saved)})}>{busy()==="publish"?"Publishing…":"Publish"}</button><button class="icon danger-link" aria-label="Delete page" onClick={()=>confirm(`Delete ${draft().title}?`)&&p.onDelete(draft())}>Delete</button></div></header>{error()&&<p class="error banner" role="alert">{error()}</p>}<div class="editor-grid"><aside class="regions"><h3>Page structure</h3><label>Template<select value={draft().template_id} onChange={e=>update({...draft(),template_id:e.currentTarget.value})}><For each={p.templates}>{t=><option value={t.id}>{t.name}</option>}</For></select></label><For each={template()?.regions}>{region=><div class="region-group"><div><strong>{region.name}</strong><small>{blocks(region.name).length}/{region.max_components}</small></div><For each={blocks(region.name)}>{block=>{const def=p.components.find(c=>c.id===block.component_id)!;return <button draggable="true" onDragStart={()=>dragged=block.id} onDragOver={e=>e.preventDefault()} onDrop={()=>{if(dragged&&dragged!==block.id){const from=draft().blocks.findIndex(b=>b.id===dragged),to=draft().blocks.findIndex(b=>b.id===block.id),copy=[...draft().blocks];copy.splice(to,0,...copy.splice(from,1));update({...draft(),blocks:copy})}}} class={selected()===block.id?"active":""} onClick={()=>setSelected(block.id)}><span class="drag">⠿</span>{def?.name}<span><i onClick={e=>{e.stopPropagation();move(block.id,-1)}} aria-label="Move up">↑</i><i onClick={e=>{e.stopPropagation();move(block.id,1)}} aria-label="Move down">↓</i></span></button>}}</For><select aria-label={`Add to ${region.name}`} value="" onChange={e=>add(region,e.currentTarget.value)}><option value="">+ Add component</option><For each={p.components.filter(c=>region.allowed_components.includes(c.id))}>{c=><option value={c.id}>{c.name}</option>}</For></select></div>}</For></aside><main class="canvas-wrap"><div class="preview-tools"><span>Live preview</span><div><button class={!mobile()?"active":""} onClick={()=>setMobile(false)}>Desktop</button><button class={mobile()?"active":""} onClick={()=>setMobile(true)}>Mobile</button></div></div><div class={`canvas ${mobile()?"mobile":""}`}><For each={draft().blocks}>{block=>{const def=p.components.find(c=>c.id===block.component_id);return <Show when={def}>{d=><div class={`preview-block ${selected()===block.id?"selected":""}`} onClick={()=>setSelected(block.id)}><BlockRenderer block={block} definition={d()}/></div>}</Show>}}</For><Show when={!draft().blocks.length}><div class="empty"><p class="eyebrow">Empty canvas</p><h2>Add your first component</h2><p>Use a region on the left to begin.</p></div></Show></div></main><aside class="inspector"><h3>Properties</h3><Show when={active()} keyed fallback={<p class="muted">Select a component on the canvas to edit its content.</p>}>{block=>{const def=p.components.find(c=>c.id===block.component_id)!;return <><div class="inspector-title"><div><strong>{def.name}</strong><small>{block.region}</small></div><button class="danger-link" onClick={()=>remove(block.id)}>Remove</button></div><For each={def.fields}>{field=><label>{field.label}{field.kind==="textarea"?<textarea required={field.required} value={block.fields[field.name]||""} onInput={e=>update({...draft(),blocks:draft().blocks.map(b=>b.id===block.id?{...b,fields:{...b.fields,[field.name]:e.currentTarget.value}}:b)})}/>:<input type={field.kind==="url"?"url":"text"} required={field.required} value={block.fields[field.name]||""} onInput={e=>update({...draft(),blocks:draft().blocks.map(b=>b.id===block.id?{...b,fields:{...b.fields,[field.name]:e.currentTarget.value}}:b)})}/>}</label>}</For></>}}</Show></aside></div></section>}
+import { createSignal, For, Show } from "solid-js";
+import type { Block, ComponentDef, Page, Region, Template } from "../types";
+import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
+type Props = {
+  page: Page;
+  templates: Template[];
+  components: ComponentDef[];
+  onSave: (p: Page) => Promise<Page>;
+  onPublish: (p: Page) => Promise<Page>;
+  onDelete: (p: Page) => Promise<void>;
+  onDirty: (dirty: boolean) => void;
+};
+export function PageEditor(p: Props) {
+  const [draft, setDraft] = createSignal(structuredClone(p.page));
+  const [selected, setSelected] = createSignal<string>();
+  const [mobile, setMobile] = createSignal(false);
+  const [busy, setBusy] = createSignal("");
+  const [error, setError] = createSignal("");
+  let dragged: string | undefined;
+  const template = () => p.templates.find((t) => t.id === draft().template_id);
+  const update = (value: Page) => {
+    setDraft(value);
+    p.onDirty(true);
+  };
+  const blocks = (r: string) => draft().blocks.filter((b) => b.region === r);
+  function add(region: Region, id: string) {
+    if (blocks(region.name).length >= region.max_components)
+      return setError(
+        `${region.name} allows up to ${region.max_components} components.`,
+      );
+    const def = p.components.find((c) => c.id === id);
+    if (!def || !region.allowed_components.includes(id))
+      return setError("That component is not allowed in this region.");
+    const block: Block = {
+      id: crypto.randomUUID(),
+      component_id: id,
+      region: region.name,
+      fields: Object.fromEntries(def.fields.map((f) => [f.name, ""])),
+    };
+    update({ ...draft(), blocks: [...draft().blocks, block] });
+    setSelected(block.id);
+    setError("");
+  }
+  function move(id: string, delta: number) {
+    const region = draft().blocks.find((b) => b.id === id)?.region;
+    if (!region) return;
+    const indexes = draft()
+        .blocks.map((b, i) => (b.region === region ? i : -1))
+        .filter((i) => i >= 0),
+      at = indexes.findIndex((i) => draft().blocks[i].id === id),
+      swap = indexes[at + delta];
+    if (swap === undefined) return;
+    const copy = [...draft().blocks],
+      own = indexes[at];
+    [copy[own], copy[swap]] = [copy[swap], copy[own]];
+    update({ ...draft(), blocks: copy });
+  }
+  function remove(id: string) {
+    update({ ...draft(), blocks: draft().blocks.filter((b) => b.id !== id) });
+    setSelected(undefined);
+  }
+  async function act(name: string, fn: () => Promise<Page>) {
+    setBusy(name);
+    setError("");
+    try {
+      const saved = await fn();
+      setDraft(structuredClone(saved));
+      p.onDirty(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setBusy("");
+    }
+  }
+  async function publish() {
+    setBusy("publish");
+    setError("");
+    try {
+      const saved = await p.onSave(draft());
+      setDraft(structuredClone(saved));
+      p.onDirty(false);
+      setDraft(structuredClone(await p.onPublish(saved)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setBusy("");
+    }
+  }
+  async function deletePage() {
+    if (!confirm(`Delete ${draft().title}?`)) return;
+    setBusy("delete");
+    setError("");
+    try {
+      await p.onDelete(draft());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete page");
+      setBusy("");
+    }
+  }
+  const active = () => draft().blocks.find((b) => b.id === selected());
+  return (
+    <section class="editor">
+      <header class="editor-head">
+        <div>
+          <p class="eyebrow">Page editor</p>
+          <input
+            class="title-input"
+            aria-label="Page title"
+            value={draft().title}
+            onInput={(e) =>
+              update({ ...draft(), title: e.currentTarget.value })
+            }
+          />
+          <input
+            class="slug-input"
+            aria-label="Page path"
+            value={draft().slug}
+            onInput={(e) => update({ ...draft(), slug: e.currentTarget.value })}
+          />
+        </div>
+        <div class="actions">
+          <span class="status">
+            {draft().published_revision === draft().revision
+              ? "Published"
+              : "Draft changes"}
+          </span>
+          <button
+            disabled={!!busy()}
+            onClick={() => act("save", () => p.onSave(draft()))}
+          >
+            {busy() === "save" ? "Saving…" : "Save draft"}
+          </button>
+          <button class="primary" disabled={!!busy()} onClick={publish}>
+            {busy() === "publish" ? "Publishing…" : "Publish"}
+          </button>
+          <button
+            class="icon danger-link"
+            aria-label="Delete page"
+            disabled={!!busy()}
+            onClick={deletePage}
+          >
+            Delete
+          </button>
+        </div>
+      </header>
+      {error() && (
+        <p class="error banner" role="alert">
+          {error()}
+        </p>
+      )}
+      <div class="editor-grid">
+        <aside class="regions">
+          <h3>Page structure</h3>
+          <label>
+            Template
+            <select
+              value={draft().template_id}
+              onChange={(e) =>
+                update({ ...draft(), template_id: e.currentTarget.value })
+              }
+            >
+              <For each={p.templates}>
+                {(t) => <option value={t.id}>{t.name}</option>}
+              </For>
+            </select>
+          </label>
+          <For each={template()?.regions}>
+            {(region) => (
+              <div class="region-group">
+                <div>
+                  <strong>{region.name}</strong>
+                  <small>
+                    {blocks(region.name).length}/{region.max_components}
+                  </small>
+                </div>
+                <For each={blocks(region.name)}>
+                  {(block) => {
+                    const def = p.components.find(
+                      (c) => c.id === block.component_id,
+                    )!;
+                    return (
+                      <div
+                        class={`block-row ${selected() === block.id ? "active" : ""}`}
+                      >
+                        <button
+                          draggable="true"
+                          onDragStart={() => (dragged = block.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => {
+                            if (dragged && dragged !== block.id) {
+                              const from = draft().blocks.findIndex(
+                                  (b) => b.id === dragged,
+                                ),
+                                to = draft().blocks.findIndex(
+                                  (b) => b.id === block.id,
+                                ),
+                                copy = [...draft().blocks];
+                              copy.splice(to, 0, ...copy.splice(from, 1));
+                              update({ ...draft(), blocks: copy });
+                            }
+                          }}
+                          onClick={() => setSelected(block.id)}
+                        >
+                          <span class="drag">⠿</span>
+                          {def?.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => move(block.id, -1)}
+                          aria-label={`Move ${def?.name} up`}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => move(block.id, 1)}
+                          aria-label={`Move ${def?.name} down`}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    );
+                  }}
+                </For>
+                <select
+                  aria-label={`Add to ${region.name}`}
+                  value=""
+                  onChange={(e) => add(region, e.currentTarget.value)}
+                >
+                  <option value="">+ Add component</option>
+                  <For
+                    each={p.components.filter((c) =>
+                      region.allowed_components.includes(c.id),
+                    )}
+                  >
+                    {(c) => <option value={c.id}>{c.name}</option>}
+                  </For>
+                </select>
+              </div>
+            )}
+          </For>
+        </aside>
+        <main class="canvas-wrap">
+          <div class="preview-tools">
+            <span>Live preview</span>
+            <div>
+              <button
+                class={!mobile() ? "active" : ""}
+                onClick={() => setMobile(false)}
+              >
+                Desktop
+              </button>
+              <button
+                class={mobile() ? "active" : ""}
+                onClick={() => setMobile(true)}
+              >
+                Mobile
+              </button>
+            </div>
+          </div>
+          <div
+            class={`canvas ${mobile() ? "mobile" : ""}`}
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest("a")) e.preventDefault();
+            }}
+          >
+            <For
+              each={blocksInTemplateOrder(
+                draft().blocks,
+                template()?.regions ?? [],
+              )}
+            >
+              {(block) => {
+                const def = p.components.find(
+                  (c) => c.id === block.component_id,
+                );
+                return (
+                  <Show when={def}>
+                    {(d) => (
+                      <div
+                        class={`preview-block ${selected() === block.id ? "selected" : ""}`}
+                        onClick={() => setSelected(block.id)}
+                      >
+                        <BlockRenderer block={block} definition={d()} />
+                      </div>
+                    )}
+                  </Show>
+                );
+              }}
+            </For>
+            <Show when={!draft().blocks.length}>
+              <div class="empty">
+                <p class="eyebrow">Empty canvas</p>
+                <h2>Add your first component</h2>
+                <p>Use a region on the left to begin.</p>
+              </div>
+            </Show>
+          </div>
+        </main>
+        <aside class="inspector">
+          <h3>Properties</h3>
+          <Show
+            when={active()}
+            fallback={
+              <p class="muted">
+                Select a component on the canvas to edit its content.
+              </p>
+            }
+          >
+            {(block) => {
+              const def = () =>
+                p.components.find((c) => c.id === block()?.component_id)!;
+              return (
+                <>
+                  <div class="inspector-title">
+                    <div>
+                      <strong>{def().name}</strong>
+                      <small>{block()?.region}</small>
+                    </div>
+                    <button
+                      class="danger-link"
+                      onClick={() => block() && remove(block()!.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <For each={def().fields}>
+                    {(field) => (
+                      <label>
+                        {field.label}
+                        {field.kind === "textarea" ? (
+                          <textarea
+                            required={field.required}
+                            value={block()?.fields[field.name] || ""}
+                            onInput={(e) =>
+                              update({
+                                ...draft(),
+                                blocks: draft().blocks.map((b) =>
+                                  b.id === block()?.id
+                                    ? {
+                                        ...b,
+                                        fields: {
+                                          ...b.fields,
+                                          [field.name]: e.currentTarget.value,
+                                        },
+                                      }
+                                    : b,
+                                ),
+                              })
+                            }
+                          />
+                        ) : (
+                          <input
+                            type={field.kind === "url" ? "url" : "text"}
+                            required={field.required}
+                            value={block()?.fields[field.name] || ""}
+                            onInput={(e) =>
+                              update({
+                                ...draft(),
+                                blocks: draft().blocks.map((b) =>
+                                  b.id === block()?.id
+                                    ? {
+                                        ...b,
+                                        fields: {
+                                          ...b.fields,
+                                          [field.name]: e.currentTarget.value,
+                                        },
+                                      }
+                                    : b,
+                                ),
+                              })
+                            }
+                          />
+                        )}
+                      </label>
+                    )}
+                  </For>
+                </>
+              );
+            }}
+          </Show>
+        </aside>
+      </div>
+    </section>
+  );
+}
