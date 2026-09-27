@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This repository has no per-thread authentication or persistent services to
-# reconnect. Toolchains and dependencies are restored in .agents/setup.
+# No authentication or persistent services to reconnect yet.
 exit 0
