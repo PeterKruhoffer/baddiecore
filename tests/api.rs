@@ -17,6 +17,23 @@ struct TestApp {
     cookie: String,
 }
 
+#[tokio::test]
+async fn spa_routes_serve_html_with_success_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<html>CMS</html>").unwrap();
+    let app = router(
+        AppState::open(dir.path().join("cms.db"), "secret".into(), false).unwrap(),
+        dir.path(),
+    );
+    for path in ["/admin", "/about/team"] {
+        let response = call(&app, "GET", path, None, None::<&Value>).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), b"<html>CMS</html>");
+    }
+}
+
 async fn setup() -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cms.db");

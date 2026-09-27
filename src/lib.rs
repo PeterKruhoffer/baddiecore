@@ -361,7 +361,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/content", get(content))
         .nest("/api/admin", admin)
-        .fallback_service(ServeDir::new(static_dir).not_found_service(ServeFile::new(index)))
+        .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .with_state(state)
 }

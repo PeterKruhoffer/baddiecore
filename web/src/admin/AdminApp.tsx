@@ -6,11 +6,7 @@ import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
 export function AdminApp() {
-  const [reload, setReload] = createSignal(0);
-  const request = createRequest(() => {
-    reload();
-    return api.bootstrap();
-  });
+  const request = createRequest(() => api.bootstrap());
   const data = request.value;
   const refetch = request.refetch;
   const [section, setSection] = createSignal<
@@ -51,7 +47,7 @@ export function AdminApp() {
         <Login
           onSuccess={() => {
             setLoggedOut(false);
-            setReload((x) => x + 1);
+            void refetch();
           }}
         />
       }

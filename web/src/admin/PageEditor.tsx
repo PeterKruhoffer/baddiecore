@@ -16,10 +16,12 @@ export function PageEditor(p: Props) {
   const [mobile, setMobile] = createSignal(false);
   const [busy, setBusy] = createSignal("");
   const [error, setError] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
   let dragged: string | undefined;
   const template = () => p.templates.find((t) => t.id === draft().template_id);
   const update = (value: Page) => {
     setDraft(value);
+    setDirty(true);
     p.onDirty(true);
   };
   const blocks = (r: string) => draft().blocks.filter((b) => b.region === r);
@@ -65,6 +67,7 @@ export function PageEditor(p: Props) {
     try {
       const saved = await fn();
       setDraft(structuredClone(saved));
+      setDirty(false);
       p.onDirty(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
@@ -78,6 +81,7 @@ export function PageEditor(p: Props) {
     try {
       const saved = await p.onSave(draft());
       setDraft(structuredClone(saved));
+      setDirty(false);
       p.onDirty(false);
       setDraft(structuredClone(await p.onPublish(saved)));
     } catch (e) {
@@ -106,6 +110,7 @@ export function PageEditor(p: Props) {
           <input
             class="title-input"
             aria-label="Page title"
+            disabled={!!busy()}
             value={draft().title}
             onInput={(e) =>
               update({ ...draft(), title: e.currentTarget.value })
@@ -114,15 +119,18 @@ export function PageEditor(p: Props) {
           <input
             class="slug-input"
             aria-label="Page path"
+            disabled={!!busy()}
             value={draft().slug}
             onInput={(e) => update({ ...draft(), slug: e.currentTarget.value })}
           />
         </div>
         <div class="actions">
           <span class="status">
-            {draft().published_revision === draft().revision
-              ? "Published"
-              : "Draft changes"}
+            {dirty()
+              ? "Unsaved changes"
+              : draft().published_revision === draft().revision
+                ? "Published"
+                : "Draft changes"}
           </span>
           <button
             disabled={!!busy()}
@@ -148,7 +156,7 @@ export function PageEditor(p: Props) {
           {error()}
         </p>
       )}
-      <div class="editor-grid">
+      <div class="editor-grid" inert={!!busy()}>
         <aside class="regions">
           <h3>Page structure</h3>
           <label>
@@ -225,7 +233,10 @@ export function PageEditor(p: Props) {
                 <select
                   aria-label={`Add to ${region.name}`}
                   value=""
-                  onChange={(e) => add(region, e.currentTarget.value)}
+                  onChange={(e) => {
+                    add(region, e.currentTarget.value);
+                    e.currentTarget.value = "";
+                  }}
                 >
                   <option value="">+ Add component</option>
                   <For

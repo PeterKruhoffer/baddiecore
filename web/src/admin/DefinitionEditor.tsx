@@ -161,85 +161,89 @@ function TemplateRegions(p: {
   return (
     <fieldset>
       <legend>Regions</legend>
-      <For each={p.value.regions}>
-        {(region, i) => (
-          <div class="rule-card">
-            <div class="field-row">
-              <label>
-                Region name
-                <input
-                  required
-                  value={region.name}
-                  onInput={(e) =>
-                    set(
-                      p.value.regions.map((r, n) =>
-                        n === i() ? { ...r, name: e.currentTarget.value } : r,
-                      ),
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Maximum
-                <input
-                  required
-                  min="1"
-                  type="number"
-                  value={region.max_components}
-                  onInput={(e) =>
-                    set(
-                      p.value.regions.map((r, n) =>
-                        n === i()
-                          ? {
-                              ...r,
-                              max_components: Number(e.currentTarget.value),
-                            }
-                          : r,
-                      ),
-                    )
-                  }
-                />
-              </label>
+      <For each={p.value.regions.map((_, index) => index)}>
+        {(index) => {
+          const i = () => index;
+          const region = () => p.value.regions[index];
+          return (
+            <div class="rule-card">
+              <div class="field-row">
+                <label>
+                  Region name
+                  <input
+                    required
+                    value={region().name}
+                    onInput={(e) =>
+                      set(
+                        p.value.regions.map((r, n) =>
+                          n === i() ? { ...r, name: e.currentTarget.value } : r,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Maximum
+                  <input
+                    required
+                    min="1"
+                    type="number"
+                    value={region().max_components}
+                    onInput={(e) =>
+                      set(
+                        p.value.regions.map((r, n) =>
+                          n === i()
+                            ? {
+                                ...r,
+                                max_components: Number(e.currentTarget.value),
+                              }
+                            : r,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <span class="label">Allowed components</span>
+              <div class="checks">
+                <For each={p.components}>
+                  {(c) => (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={region().allowed_components.includes(c.id)}
+                        onChange={(e) =>
+                          set(
+                            p.value.regions.map((r, n) =>
+                              n === i()
+                                ? {
+                                    ...r,
+                                    allowed_components: e.currentTarget.checked
+                                      ? [...r.allowed_components, c.id]
+                                      : r.allowed_components.filter(
+                                          (id) => id !== c.id,
+                                        ),
+                                  }
+                                : r,
+                            ),
+                          )
+                        }
+                      />
+                      {c.name}
+                    </label>
+                  )}
+                </For>
+              </div>
+              <button
+                type="button"
+                class="danger-link"
+                onClick={() => set(p.value.regions.filter((_, n) => n !== i()))}
+              >
+                Remove region
+              </button>
             </div>
-            <span class="label">Allowed components</span>
-            <div class="checks">
-              <For each={p.components}>
-                {(c) => (
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={region.allowed_components.includes(c.id)}
-                      onChange={(e) =>
-                        set(
-                          p.value.regions.map((r, n) =>
-                            n === i()
-                              ? {
-                                  ...r,
-                                  allowed_components: e.currentTarget.checked
-                                    ? [...r.allowed_components, c.id]
-                                    : r.allowed_components.filter(
-                                        (id) => id !== c.id,
-                                      ),
-                                }
-                              : r,
-                          ),
-                        )
-                      }
-                    />
-                    {c.name}
-                  </label>
-                )}
-              </For>
-            </div>
-            <button
-              type="button"
-              class="danger-link"
-              onClick={() => set(p.value.regions.filter((_, n) => n !== i()))}
-            >
-              Remove region
-            </button>
-          </div>
-        )}
+          );
+        }}
       </For>
       <button
         type="button"
@@ -286,82 +290,90 @@ function ComponentFields(p: {
       </label>
       <fieldset>
         <legend>Fields</legend>
-        <For each={p.value.fields}>
-          {(field, i) => (
-            <div class="rule-card field-grid">
-              <label>
-                Key
-                <input
-                  required
-                  pattern="[a-z][a-z0-9_]*"
-                  value={field.name}
-                  onInput={(e) =>
-                    set(
-                      p.value.fields.map((f, n) =>
-                        n === i() ? { ...f, name: e.currentTarget.value } : f,
-                      ),
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Label
-                <input
-                  required
-                  value={field.label}
-                  onInput={(e) =>
-                    set(
-                      p.value.fields.map((f, n) =>
-                        n === i() ? { ...f, label: e.currentTarget.value } : f,
-                      ),
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Type
-                <select
-                  value={field.kind}
-                  onChange={(e) =>
-                    set(
-                      p.value.fields.map((f, n) =>
-                        n === i()
-                          ? { ...f, kind: e.currentTarget.value as FieldKind }
-                          : f,
-                      ),
-                    )
+        <For each={p.value.fields.map((_, index) => index)}>
+          {(index) => {
+            const i = () => index;
+            const field = () => p.value.fields[index];
+            return (
+              <div class="rule-card field-grid">
+                <label>
+                  Key
+                  <input
+                    required
+                    pattern="[a-z][a-z0-9_]*"
+                    value={field().name}
+                    onInput={(e) =>
+                      set(
+                        p.value.fields.map((f, n) =>
+                          n === i() ? { ...f, name: e.currentTarget.value } : f,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Label
+                  <input
+                    required
+                    value={field().label}
+                    onInput={(e) =>
+                      set(
+                        p.value.fields.map((f, n) =>
+                          n === i()
+                            ? { ...f, label: e.currentTarget.value }
+                            : f,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Type
+                  <select
+                    value={field().kind}
+                    onChange={(e) =>
+                      set(
+                        p.value.fields.map((f, n) =>
+                          n === i()
+                            ? { ...f, kind: e.currentTarget.value as FieldKind }
+                            : f,
+                        ),
+                      )
+                    }
+                  >
+                    <option>text</option>
+                    <option>textarea</option>
+                    <option>url</option>
+                  </select>
+                </label>
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={field().required}
+                    onChange={(e) =>
+                      set(
+                        p.value.fields.map((f, n) =>
+                          n === i()
+                            ? { ...f, required: e.currentTarget.checked }
+                            : f,
+                        ),
+                      )
+                    }
+                  />{" "}
+                  Required
+                </label>
+                <button
+                  type="button"
+                  class="danger-link"
+                  onClick={() =>
+                    set(p.value.fields.filter((_, n) => n !== i()))
                   }
                 >
-                  <option>text</option>
-                  <option>textarea</option>
-                  <option>url</option>
-                </select>
-              </label>
-              <label class="check">
-                <input
-                  type="checkbox"
-                  checked={field.required}
-                  onChange={(e) =>
-                    set(
-                      p.value.fields.map((f, n) =>
-                        n === i()
-                          ? { ...f, required: e.currentTarget.checked }
-                          : f,
-                      ),
-                    )
-                  }
-                />{" "}
-                Required
-              </label>
-              <button
-                type="button"
-                class="danger-link"
-                onClick={() => set(p.value.fields.filter((_, n) => n !== i()))}
-              >
-                Remove
-              </button>
-            </div>
-          )}
+                  Remove
+                </button>
+              </div>
+            );
+          }}
         </For>
         <button
           type="button"
