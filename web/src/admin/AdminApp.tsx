@@ -6,14 +6,15 @@ import type { ComponentDef, Page, Template } from "../types";
 import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
+import { ContentSidebar } from "./ContentSidebar";
 import { common } from "../common.stylex";
 import { buildPageTree, joinPath, pageParentPaths, type PageTreeNode } from "./pageTree";
 const styles = stylex.create({
   shell: {
     display: { default: "grid", "@media (max-width: 720px)": "block" },
     gridTemplateColumns: {
-      default: "210px 1fr",
-      "@media (max-width: 1050px)": "180px 1fr",
+      default: "250px 1fr",
+      "@media (max-width: 1050px)": "210px 1fr",
     },
     height: "100vh",
   },
@@ -23,6 +24,7 @@ const styles = stylex.create({
     padding: "21px 14px",
     display: "flex",
     flexDirection: "column",
+    overflowY: "auto",
     height: { default: null, "@media (max-width: 720px)": "auto" },
   },
   brand: {
@@ -161,19 +163,29 @@ export function AdminApp() {
   const refetch = request.refetch;
   const [section, setSection] = createSignal<"pages" | "templates" | "components">("pages");
   const [pageId, setPageId] = createSignal<string>();
+  const [blockId, setBlockId] = createSignal<string>();
+  const [definitionId, setDefinitionId] = createSignal<string>();
+  const [navigation, setNavigation] = createSignal(0);
   const [dirty, setDirty] = createSignal(false);
   const [loggedOut, setLoggedOut] = createSignal(false);
   const guard = () => !dirty() || confirm("Discard your unsaved changes?");
-  function choose(id?: string) {
+  function choose(id?: string, selectedBlock?: string) {
     if (guard()) {
+      setSection("pages");
       setPageId(id);
+      setBlockId(selectedBlock);
+      setDefinitionId();
+      setNavigation(navigation() + 1);
       setDirty(false);
     }
   }
-  function changeSection(next: "pages" | "templates" | "components") {
+  function changeSection(next: "pages" | "templates" | "components", selectedDefinition?: string) {
     if (!guard()) return;
     setSection(next);
     setPageId();
+    setBlockId();
+    setDefinitionId(selectedDefinition);
+    setNavigation(navigation() + 1);
     setDirty(false);
   }
   async function refresh() {
@@ -212,38 +224,18 @@ export function AdminApp() {
               <small {...stylex.attrs(styles.brandSmall)}>Workspace</small>
             </span>
           </a>
-          <nav {...stylex.attrs(styles.nav)}>
-            <button
-              {...stylex.attrs(
-                common.button,
-                styles.navButton,
-                section() === "pages" && styles.active,
-              )}
-              onClick={() => changeSection("pages")}
-            >
-              Pages <span>{data()?.pages.length || 0}</span>
-            </button>
-            <button
-              {...stylex.attrs(
-                common.button,
-                styles.navButton,
-                section() === "templates" && styles.active,
-              )}
-              onClick={() => changeSection("templates")}
-            >
-              Templates
-            </button>
-            <button
-              {...stylex.attrs(
-                common.button,
-                styles.navButton,
-                section() === "components" && styles.active,
-              )}
-              onClick={() => changeSection("components")}
-            >
-              Components
-            </button>
-          </nav>
+          <ContentSidebar
+            pages={data()?.pages ?? []}
+            components={data()?.components ?? []}
+            templates={data()?.templates ?? []}
+            canManageDefinitions={true}
+            selectedSection={section()}
+            selectedPageId={pageId()}
+            selectedBlockId={blockId()}
+            selectedDefinitionId={definitionId()}
+            onNavigatePage={choose}
+            onNavigateDefinition={changeSection}
+          />
           <div {...stylex.attrs(styles.sidebarFoot)}>
             <a {...stylex.attrs(styles.footLink)} href="/" target="_blank">
               View site ↗
@@ -295,10 +287,11 @@ export function AdminApp() {
                 <Show
                   when={section() === "pages"}
                   fallback={
-                    <For each={[section()]}>
-                      {(kind) => (
+                    <For each={[navigation()]}>
+                      {() => (
                         <DefinitionEditor
-                          kind={kind as "templates" | "components"}
+                          kind={section() as "templates" | "components"}
+                          initialId={definitionId()}
                           templates={d().templates}
                           components={d().components}
                           onDirty={setDirty}
@@ -334,10 +327,11 @@ export function AdminApp() {
                     }
                   >
                     {(id) => (
-                      <For each={[id()]}>
+                      <For each={[`${id()}:${navigation()}`]}>
                         {() => (
                           <PageEditor
                             page={page()!}
+                            initialBlockId={blockId()}
                             pages={d().pages}
                             templates={d().templates}
                             components={d().components}

@@ -72,6 +72,7 @@ const styles = stylex.create({
 });
 type Props = {
   kind: "templates" | "components";
+  initialId?: string;
   templates: Template[];
   components: ComponentDef[];
   onSave: (value: Template | ComponentDef, isNew: boolean) => Promise<void>;
@@ -91,10 +92,17 @@ const blankComponent = (): ComponentDef => ({
   fields: [{ name: "title", label: "Title", kind: "text", required: true }],
 });
 export function DefinitionEditor(p: Props) {
-  const [selected, setSelected] = createSignal("");
+  const initial = (p.kind === "templates" ? p.templates : p.components).find(
+    (item) => item.id === p.initialId,
+  );
+  const [selected, setSelected] = createSignal(initial?.id ?? "");
   const [dirty, setDirty] = createSignal(false);
   const [draft, setDraft] = createSignal<Template | ComponentDef>(
-    p.kind === "templates" ? blankTemplate() : blankComponent(),
+    initial
+      ? structuredClone(initial)
+      : p.kind === "templates"
+        ? blankTemplate()
+        : blankComponent(),
   );
   const [error, setError] = createSignal("");
   const list = () => (p.kind === "templates" ? p.templates : p.components);

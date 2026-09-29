@@ -42,7 +42,7 @@ const styles = stylex.create({
   grid: {
     display: "grid",
     gridTemplateColumns: {
-      default: "210px minmax(420px, 1fr) 260px",
+      default: "210px minmax(0, 1fr) 260px",
       "@media (max-width: 1050px)": "190px 1fr",
       "@media (max-width: 720px)": "1fr",
     },
@@ -118,6 +118,7 @@ const styles = stylex.create({
 });
 type Props = {
   page: Page;
+  initialBlockId?: string;
   pages: Page[];
   templates: Template[];
   components: ComponentDef[];
@@ -130,7 +131,7 @@ export function PageEditor(p: Props) {
   const [draft, setDraft] = createSignal(structuredClone(p.page));
   const [parent, setParent] = createSignal(parentPath(p.page.slug));
   const [segment, setSegment] = createSignal(pathSegment(p.page.slug));
-  const [selected, setSelected] = createSignal<string>();
+  const [selected, setSelected] = createSignal(p.initialBlockId);
   const [mobile, setMobile] = createSignal(false);
   const [busy, setBusy] = createSignal("");
   const [error, setError] = createSignal("");
