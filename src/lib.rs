@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path as AxumPath, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 pub mod auth;
 pub mod serialization;
+pub mod workflow;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Field {
@@ -88,8 +89,12 @@ pub struct Bootstrap {
     pub pages: Vec<Page>,
     pub templates: Vec<Template>,
     pub components: Vec<Component>,
+    #[serde(default)]
+    pub access: Option<workflow::Access>,
+    #[serde(default)]
+    pub reviews: Vec<workflow::Review>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Content {
     pub page: Page,
     pub template: Template,
@@ -148,11 +153,16 @@ impl AppState {
             "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ] {
             conn.query_drop(statement)
                 .map_err(|_| "could not initialize MySQL schema")?;
         }
         let state = Self { db, auth };
+        state
+            .transaction(|db| workflow::initialize(db))
+            .map_err(|e| e.1)?;
         state.seed().map_err(|e| e.1)?;
         Ok(state)
     }
@@ -336,6 +346,12 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .route("/pages", post(create_page))
         .route("/pages/{id}", put(update_page).delete(delete_page))
         .route("/pages/{id}/publish", post(publish_page))
+        .route("/pages/{id}/submit", post(workflow::submit))
+        .route("/reviews/{id}", post(workflow::decide))
+        .route(
+            "/organization",
+            get(workflow::get_organization).put(workflow::save_organization),
+        )
         .route("/templates", post(create_template))
         .route("/templates/{id}", put(update_template))
         .route("/components", post(create_component))
@@ -380,14 +396,34 @@ async fn require_auth(
     }
 }
 
-async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>> {
-    state.run(|db| Ok(Json(load_bootstrap(db)?))).await
+async fn bootstrap(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+) -> Result<Json<Bootstrap>> {
+    state
+        .run_as(editor, |db, access| {
+            let mut data = load_bootstrap(db)?;
+            data.pages.retain(|page| access.allows(&page.slug));
+            let reviews: Vec<workflow::Review> = load_all(db, "reviews")?;
+            data.reviews = reviews
+                .into_iter()
+                .filter(|review| {
+                    access.allows(&review.content.page.slug)
+                        && data.pages.iter().any(|p| p.id == review.id)
+                })
+                .collect();
+            data.access = Some(access);
+            Ok(Json(data))
+        })
+        .await
 }
 fn load_bootstrap(db: &mut impl Queryable) -> Result<Bootstrap> {
     Ok(Bootstrap {
         pages: load_all(db, "pages")?,
         templates: load_all(db, "templates")?,
         components: load_all(db, "components")?,
+        access: None,
+        reviews: vec![],
     })
 }
 fn load_all<T: serde::de::DeserializeOwned>(
@@ -408,11 +444,13 @@ struct NewPage {
 }
 async fn create_page(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     Json(input): Json<NewPage>,
 ) -> Result<(StatusCode, Json<Page>)> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
             validate_slug(&input.slug)?;
+            access.page(&input.slug)?;
             require_template(db, &input.template_id)?;
             if input.title.trim().is_empty() {
                 return Err(ApiError::bad("title is required"));
@@ -433,15 +471,18 @@ async fn create_page(
 }
 async fn update_page(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
     Json(mut page): Json<Page>,
 ) -> Result<Json<Page>> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
             if page.id != id {
                 return Err(ApiError::bad("page id does not match path"));
             }
             let old = require_page(db, &id)?;
+            access.page(&old.slug)?;
+            access.page(&page.slug)?;
             if page.revision != old.revision {
                 return Err(ApiError::conflict("stale revision"));
             }
@@ -461,6 +502,7 @@ async fn update_page(
                     if child.id == page.id {
                         *child = page.clone();
                     } else if is_descendant(&child.slug, &old.slug) {
+                        access.page(&child.slug)?;
                         child.slug = format!(
                             "{}{}",
                             page.slug.trim_end_matches('/'),
@@ -468,6 +510,7 @@ async fn update_page(
                         );
                         child.revision += 1;
                         validate_slug(&child.slug)?;
+                        access.page(&child.slug)?;
                         changed.push(child.clone());
                     }
                 }
@@ -509,45 +552,48 @@ struct Revision {
 }
 async fn publish_page(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
     Json(input): Json<Revision>,
 ) -> Result<Json<Page>> {
     state
-        .run(move |db| {
-            let mut page = require_page(db, &id)?;
+        .run_as(editor, move |db, access| {
+            access.admin()?;
+            let page = require_page(db, &id)?;
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
             }
-            validate_page(db, &page)?;
-            page.published_revision = Some(page.revision);
-            let template = require_template(db, &page.template_id)?;
-            let components = components_for_page(db, &page)?;
-            let snapshot = Content {
-                page: page.clone(),
-                template,
-                components,
-            };
-            db.exec_drop("UPDATE pages SET data=? WHERE id=?", (json(&page)?, &id))
-                .map_err(db_error)?;
-            // Delete then insert in the same transaction: MySQL's ON DUPLICATE KEY
-            // would also match another page's slug and overwrite its snapshot.
-            db.exec_drop("DELETE FROM snapshots WHERE page_id=?", (&id,))
-                .map_err(db_error)?;
-            db.exec_drop(
-                "INSERT INTO snapshots(page_id,slug,data) VALUES(?,?,?)",
-                (&id, &page.slug, json(&snapshot)?),
-            )
-            .map_err(constraint_error)?;
-            Ok(Json(page))
+            Ok(Json(publish(db, page)?))
         })
         .await
 }
+fn publish(db: &mut impl Queryable, mut page: Page) -> Result<Page> {
+    validate_page(db, &page)?;
+    page.published_revision = Some(page.revision);
+    let snapshot = workflow::current_content(db, page.clone())?;
+    db.exec_drop(
+        "UPDATE pages SET data=? WHERE id=?",
+        (json(&page)?, &page.id),
+    )
+    .map_err(db_error)?;
+    // Never use an upsert here: a conflicting slug belongs to another page.
+    db.exec_drop("DELETE FROM snapshots WHERE page_id=?", (&page.id,))
+        .map_err(db_error)?;
+    db.exec_drop(
+        "INSERT INTO snapshots(page_id,slug,data) VALUES(?,?,?)",
+        (&page.id, &page.slug, json(&snapshot)?),
+    )
+    .map_err(constraint_error)?;
+    Ok(page)
+}
 async fn delete_page(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
+            access.admin()?;
             let page = require_page(db, &id)?;
             let pages: Vec<Page> = load_all(db, "pages")?;
             if pages.iter().any(|p| is_descendant(&p.slug, &page.slug)) {
@@ -572,10 +618,12 @@ struct NewTemplate {
 }
 async fn create_template(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     Json(input): Json<NewTemplate>,
 ) -> Result<(StatusCode, Json<Template>)> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
+            access.admin()?;
             let item = Template {
                 id: Uuid::new_v4().to_string(),
                 name: input.name,
@@ -594,11 +642,13 @@ async fn create_template(
 }
 async fn update_template(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
     Json(item): Json<Template>,
 ) -> Result<Json<Template>> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
+            access.admin()?;
             if item.id != id {
                 return Err(ApiError::bad("template id does not match path"));
             }
@@ -621,10 +671,12 @@ struct NewComponent {
 }
 async fn create_component(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     Json(input): Json<NewComponent>,
 ) -> Result<(StatusCode, Json<Component>)> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
+            access.admin()?;
             let item = Component {
                 id: Uuid::new_v4().to_string(),
                 name: input.name,
@@ -644,11 +696,13 @@ async fn create_component(
 }
 async fn update_component(
     State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
     Json(item): Json<Component>,
 ) -> Result<Json<Component>> {
     state
-        .run(move |db| {
+        .run_as(editor, move |db, access| {
+            access.admin()?;
             if item.id != id {
                 return Err(ApiError::bad("component id does not match path"));
             }

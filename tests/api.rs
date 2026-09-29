@@ -888,7 +888,7 @@ async fn custom_auth_guards_cms_without_affecting_public_content() {
         call(&app, "GET", "/api/admin/bootstrap", None, None::<&Value>)
             .await
             .status(),
-        StatusCode::OK
+        StatusCode::FORBIDDEN
     );
     let response = app
         .oneshot(
@@ -1302,4 +1302,554 @@ async fn import_path_swaps_are_atomic_and_pull_requires_explicit_overwrites() {
     assert_eq!(imported_page.published_revision, None);
     assert!(imported.components.iter().any(|c| c.id == "git-component"));
     assert!(imported.templates.iter().any(|t| t.id == "git-template"));
+}
+
+// Test-only provider: cookies contain stable IDs, never enabled by the server.
+fn member_app(app: &TestApp) -> Router {
+    struct Identity;
+    impl baddiecore::auth::AuthProvider for Identity {
+        fn routes(&self) -> Router {
+            Router::new()
+        }
+        fn authorize<'a>(
+            &'a self,
+            headers: &'a axum::http::HeaderMap,
+        ) -> baddiecore::auth::Authorization<'a> {
+            Box::pin(async move {
+                Ok(baddiecore::auth::Editor {
+                    id: headers[header::COOKIE].to_str().unwrap().into(),
+                })
+            })
+        }
+    }
+    router(
+        AppState::open_with_auth(&app.db.url, std::sync::Arc::new(Identity)).unwrap(),
+        app._dir.path(),
+    )
+}
+
+async fn members(app: &TestApp) -> Value {
+    let org = json!({"revision":0,"members":[
+        {"id":"admin","name":"Admin","role":"admin","paths":[],"groups":[]},
+        {"id":"editor","name":"Editor","role":"editor","paths":["/other"],"groups":["news"]},
+        {"id":"reviewer","name":"Reviewer","role":"reviewer","paths":[],"groups":[]}
+    ],"groups":[{"id":"news","name":"News team","paths":["/news"]}]});
+    let response = call(
+        &app.app,
+        "PUT",
+        "/api/admin/organization",
+        Some(&app.cookie),
+        Some(&org),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    read(response).await
+}
+
+#[tokio::test]
+async fn membership_scopes_and_admin_routes_cannot_be_bypassed() {
+    let app = setup().await;
+    let mut org = members(&app).await;
+    let scoped = member_app(&app);
+    let news = create_test_page(&app, "/news").await;
+    let child = create_test_page(&app, "/news/child").await;
+    create_test_page(&app, "/newspaper").await;
+    create_test_page(&app, "/other").await;
+    let home = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    for id in ["unknown", "shared-admin"] {
+        assert_eq!(
+            call(
+                &scoped,
+                "GET",
+                "/api/admin/bootstrap",
+                Some(id),
+                None::<&Value>
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let visible: Bootstrap = read(
+        call(
+            &scoped,
+            "GET",
+            "/api/admin/bootstrap",
+            Some("editor"),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    let slugs: Vec<_> = visible.pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs.len(), 3);
+    assert!(
+        slugs.contains(&"/news") && slugs.contains(&"/news/child") && slugs.contains(&"/other")
+    );
+    for role in ["editor", "reviewer"] {
+        for (method, url, body) in [
+            (
+                "POST",
+                "/api/admin/pages/home/publish",
+                json!({"revision":home.revision}),
+            ),
+            ("DELETE", "/api/admin/pages/home", json!({})),
+            (
+                "POST",
+                "/api/admin/components",
+                json!({"name":"X","description":"","renderer":"text","fields":[]}),
+            ),
+            (
+                "PUT",
+                "/api/admin/components/text",
+                json!({"id":"text","name":"X","description":"","renderer":"text","fields":[]}),
+            ),
+            (
+                "POST",
+                "/api/admin/templates",
+                json!({"name":"X","description":"","regions":[]}),
+            ),
+            (
+                "PUT",
+                "/api/admin/templates/homepage",
+                json!({"id":"homepage","name":"X","description":"","regions":[]}),
+            ),
+            ("PUT", "/api/admin/organization", org.clone()),
+        ] {
+            assert_eq!(
+                call(&scoped, method, url, Some(role), Some(&body))
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{role} {url}"
+            );
+        }
+        assert_eq!(
+            call(
+                &scoped,
+                "GET",
+                "/api/admin/organization",
+                Some(role),
+                None::<&Value>
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        call(
+            &scoped,
+            "PUT",
+            "/api/admin/pages/home",
+            Some("editor"),
+            Some(&home)
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            "/api/admin/pages/home/submit",
+            Some("editor"),
+            Some(&json!({"revision":1}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            "/api/admin/pages",
+            Some("editor"),
+            Some(&json!({"title":"escape","slug":"/newspaper/x","template_id":"homepage"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut moved = news.clone();
+    moved.slug = "/outside".into();
+    assert_eq!(
+        call(
+            &scoped,
+            "PUT",
+            &format!("/api/admin/pages/{}", news.id),
+            Some("editor"),
+            Some(&moved)
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let after = bootstrap(&app).await;
+    assert_eq!(
+        after.pages.iter().find(|p| p.id == child.id).unwrap(),
+        &child
+    );
+    // Valid move affects descendants and increments their revisions.
+    moved.slug = "/other/news".into();
+    assert_eq!(
+        call(
+            &scoped,
+            "PUT",
+            &format!("/api/admin/pages/{}", news.id),
+            Some("editor"),
+            Some(&moved)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let after = bootstrap(&app).await;
+    let moved_child = after.pages.iter().find(|p| p.id == child.id).unwrap();
+    assert_eq!(moved_child.slug, "/other/news/child");
+    assert_eq!(moved_child.revision, child.revision + 1);
+    // Revoking group access takes effect without reauthentication.
+    org["groups"][0]["paths"] = json!([]);
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/organization",
+            Some(&app.cookie),
+            Some(&org)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            "/api/admin/pages",
+            Some("editor"),
+            Some(&json!({"title":"denied","slug":"/news/new","template_id":"homepage"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Stale membership writes cannot restore revoked grants.
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/organization",
+            Some(&app.cookie),
+            Some(&org)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn reviews_bind_submission_content_schema_and_transitions() {
+    let app = setup().await;
+    members(&app).await;
+    let scoped = member_app(&app);
+    let mut page = create_test_page(&app, "/news/story").await;
+    let submit_url = format!("/api/admin/pages/{}/submit", page.id);
+    let review_url = format!("/api/admin/reviews/{}", page.id);
+    let page_url = format!("/api/admin/pages/{}", page.id);
+    let submit = |revision| json!({"revision":revision});
+    let decision = |review: &Value, approve, feedback| json!({"revision":review["content"]["page"]["revision"],"submission_id":review["submission_id"],"approve":approve,"feedback":feedback});
+    let review: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &submit_url,
+            Some("editor"),
+            Some(&submit(page.revision)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(review["status"], "submitted");
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("editor"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, false, "  "))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let rejected: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, false, "Please add detail")),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(rejected["status"], "changes_requested");
+    assert_eq!(rejected["feedback"], "Please add detail");
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let review: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &submit_url,
+            Some("editor"),
+            Some(&submit(page.revision)),
+        )
+        .await,
+    )
+    .await;
+    page.title = "Changed after submission".into();
+    page = read(call(&scoped, "PUT", &page_url, Some("editor"), Some(&page)).await).await;
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/story",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let review: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &submit_url,
+            Some("editor"),
+            Some(&submit(page.revision)),
+        )
+        .await,
+    )
+    .await;
+    let mut template = bootstrap(&app).await.templates[0].clone();
+    template.name = "Changed schema".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/templates/homepage",
+            Some(&app.cookie),
+            Some(&template)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let replacement: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &submit_url,
+            Some("editor"),
+            Some(&submit(page.revision)),
+        )
+        .await,
+    )
+    .await;
+    // Same page revision, different schema/submission. An old tab must not approve it.
+    assert_ne!(review["submission_id"], replacement["submission_id"]);
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let approved: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&replacement, true, "Ready")),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(approved["status"], "approved");
+    let public: Content = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/story",
+            None,
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(public.page.title, "Changed after submission");
+    assert_eq!(public.template.name, "Changed schema");
+    assert_eq!(public.page.published_revision, Some(page.revision));
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&replacement, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    // Existing published pages follow the same review process; edits stay private.
+    page.published_revision = public.page.published_revision;
+    page.title = "Second edition".into();
+    let page: Page = read(call(&scoped, "PUT", &page_url, Some("editor"), Some(&page)).await).await;
+    let review: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &submit_url,
+            Some("editor"),
+            Some(&submit(page.revision)),
+        )
+        .await,
+    )
+    .await;
+    let before: Content = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/story",
+            None,
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(before, public);
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &review_url,
+            Some("reviewer"),
+            Some(&decision(&review, true, ""))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let after: Content = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/story",
+            None,
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(after.page.title, "Second edition");
+}
+
+#[tokio::test]
+async fn membership_rejects_orphaned_groups_and_last_admin_removal_atomically() {
+    let app = setup().await;
+    let org = members(&app).await;
+    let mut orphaned_group = org.clone();
+    orphaned_group["groups"] = json!([]);
+    let mut no_admin = org.clone();
+    no_admin["members"][0]["role"] = json!("reviewer");
+    for invalid in [orphaned_group, no_admin] {
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                "/api/admin/organization",
+                Some(&app.cookie),
+                Some(&invalid),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let current: Value = read(
+            call(
+                &app.app,
+                "GET",
+                "/api/admin/organization",
+                Some(&app.cookie),
+                None::<&Value>,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(current, org);
+    }
 }

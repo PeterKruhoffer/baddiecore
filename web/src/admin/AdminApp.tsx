@@ -7,8 +7,16 @@ import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
 import { ContentSidebar } from "./ContentSidebar";
+import { OrganizationEditor } from "./OrganizationEditor";
+import { ReviewOverview } from "./ReviewOverview";
 import { common } from "../common.stylex";
-import { buildPageTree, joinPath, pageParentPaths, type PageTreeNode } from "./pageTree";
+import {
+  buildPageTree,
+  joinPath,
+  pageParentPaths,
+  parentPath,
+  type PageTreeNode,
+} from "./pageTree";
 const styles = stylex.create({
   shell: {
     display: { default: "grid", "@media (max-width: 720px)": "block" },
@@ -37,15 +45,8 @@ const styles = stylex.create({
     fontWeight: 600,
   },
   brandSmall: { display: "block", fontSize: 10, color: "#77716a" },
-  nav: {
-    display: "grid",
-    gap: 4,
-    gridTemplateColumns: {
-      default: null,
-      "@media (max-width: 720px)": "repeat(3, 1fr)",
-    },
-  },
   navButton: {
+    width: "100%",
     borderWidth: 0,
     backgroundColor: { default: "transparent", ":hover": "#3a3530" },
     color: { default: "#c9c2b9", ":hover": "#fff" },
@@ -159,9 +160,10 @@ const styles = stylex.create({
 });
 export function AdminApp() {
   const request = createRequest(() => api.bootstrap());
-  const data = request.value;
+  const data = () => (request.error() ? undefined : request.value());
   const refetch = request.refetch;
-  const [section, setSection] = createSignal<"pages" | "templates" | "components">("pages");
+  type Section = "pages" | "templates" | "components" | "reviews" | "organization";
+  const [section, setSection] = createSignal<Section>("pages");
   const [pageId, setPageId] = createSignal<string>();
   const [blockId, setBlockId] = createSignal<string>();
   const [definitionId, setDefinitionId] = createSignal<string>();
@@ -179,7 +181,7 @@ export function AdminApp() {
       setDirty(false);
     }
   }
-  function changeSection(next: "pages" | "templates" | "components", selectedDefinition?: string) {
+  function changeSection(next: Section, selectedDefinition?: string) {
     if (!guard()) return;
     setSection(next);
     setPageId();
@@ -200,14 +202,7 @@ export function AdminApp() {
         !loggedOut() &&
         !(request.error() instanceof ApiError && (request.error() as ApiError).status === 401)
       }
-      fallback={
-        <Login
-          onSuccess={() => {
-            setLoggedOut(false);
-            void refetch();
-          }}
-        />
-      }
+      fallback={<Login onSuccess={() => window.location.reload()} />}
     >
       <div {...stylex.attrs(styles.shell)}>
         <aside {...stylex.attrs(styles.sidebar)}>
@@ -228,14 +223,40 @@ export function AdminApp() {
             pages={data()?.pages ?? []}
             components={data()?.components ?? []}
             templates={data()?.templates ?? []}
-            canManageDefinitions={true}
+            canManageDefinitions={data()?.access.role === "admin"}
             selectedSection={section()}
             selectedPageId={pageId()}
             selectedBlockId={blockId()}
             selectedDefinitionId={definitionId()}
             onNavigatePage={choose}
             onNavigateDefinition={changeSection}
-          />
+          >
+            <button
+              {...stylex.attrs(
+                common.button,
+                styles.navButton,
+                section() === "reviews" && styles.active,
+              )}
+              onClick={() => changeSection("reviews")}
+            >
+              Reviews{" "}
+              <span>
+                {data()?.reviews.filter((r) => r.status === "submitted").length || 0} pending
+              </span>
+            </button>
+            <Show when={data()?.access.role === "admin"}>
+              <button
+                {...stylex.attrs(
+                  common.button,
+                  styles.navButton,
+                  section() === "organization" && styles.active,
+                )}
+                onClick={() => changeSection("organization")}
+              >
+                Organization
+              </button>
+            </Show>
+          </ContentSidebar>
           <div {...stylex.attrs(styles.sidebarFoot)}>
             <a {...stylex.attrs(styles.footLink)} href="/" target="_blank">
               View site ↗
@@ -280,82 +301,114 @@ export function AdminApp() {
               </button>
             </div>
           </Show>
-          <Show when={data()}>
+          <Show when={!request.error() && data()}>
             {(dataAccessor) => {
               const d = () => dataAccessor();
               return (
                 <Show
-                  when={section() === "pages"}
+                  when={section() !== "organization"}
                   fallback={
-                    <For each={[navigation()]}>
-                      {() => (
-                        <DefinitionEditor
-                          kind={section() as "templates" | "components"}
-                          initialId={definitionId()}
-                          templates={d().templates}
-                          components={d().components}
-                          onDirty={setDirty}
-                          onSave={async (value, isNew) => {
-                            if (section() === "templates")
-                              await (isNew
-                                ? api.createTemplate(value as Omit<Template, "id">)
-                                : api.updateTemplate(value as Template));
-                            else
-                              await (isNew
-                                ? api.createComponent(value as Omit<ComponentDef, "id">)
-                                : api.updateComponent(value as ComponentDef));
-                            await refresh();
-                          }}
-                        />
-                      )}
-                    </For>
+                    <Show when={d().access.role === "admin"}>
+                      <OrganizationEditor onDirty={setDirty} onRefresh={refresh} />
+                    </Show>
                   }
                 >
                   <Show
-                    when={pageId()}
+                    when={section() !== "reviews"}
                     fallback={
-                      <PageHome
-                        pages={d().pages}
-                        templates={d().templates}
-                        onChoose={choose}
-                        onCreate={async (value) => {
-                          const created = await api.createPage(value);
-                          await refresh();
-                          setPageId(created.id);
-                        }}
+                      <ReviewOverview
+                        reviews={d().reviews}
+                        role={d().access.role}
+                        onRefresh={refresh}
+                        onOpen={choose}
                       />
                     }
                   >
-                    {(id) => (
-                      <For each={[`${id()}:${navigation()}`]}>
-                        {() => (
-                          <PageEditor
-                            page={page()!}
-                            initialBlockId={blockId()}
+                    <Show
+                      when={section() === "pages"}
+                      fallback={
+                        <Show when={d().access.role === "admin"}>
+                          <For each={[navigation()]}>
+                            {() => (
+                              <DefinitionEditor
+                                kind={section() as "templates" | "components"}
+                                initialId={definitionId()}
+                                templates={d().templates}
+                                components={d().components}
+                                onDirty={setDirty}
+                                onSave={async (value, isNew) => {
+                                  if (section() === "templates")
+                                    await (isNew
+                                      ? api.createTemplate(value as Omit<Template, "id">)
+                                      : api.updateTemplate(value as Template));
+                                  else
+                                    await (isNew
+                                      ? api.createComponent(value as Omit<ComponentDef, "id">)
+                                      : api.updateComponent(value as ComponentDef));
+                                  await refresh();
+                                }}
+                              />
+                            )}
+                          </For>
+                        </Show>
+                      }
+                    >
+                      <Show
+                        when={page() && pageId()}
+                        fallback={
+                          <PageHome
                             pages={d().pages}
                             templates={d().templates}
-                            components={d().components}
-                            onDirty={setDirty}
-                            onSave={async (value) => {
-                              const result = await api.savePage(value);
+                            paths={d().access.role === "editor" ? d().access.paths : ["/"]}
+                            onChoose={choose}
+                            onCreate={async (value) => {
+                              const created = await api.createPage(value);
                               await refresh();
-                              return result;
-                            }}
-                            onPublish={async (value) => {
-                              const result = await api.publish(value);
-                              await refresh();
-                              return result;
-                            }}
-                            onDelete={async (value) => {
-                              await api.deletePage(value.id);
-                              setPageId();
-                              setDirty(false);
-                              await refresh();
+                              setPageId(created.id);
                             }}
                           />
+                        }
+                      >
+                        {(id) => (
+                          <For each={[`${id()}:${navigation()}`]}>
+                            {() => (
+                              <PageEditor
+                                page={page()!}
+                                initialBlockId={blockId()}
+                                pages={d().pages}
+                                templates={d().templates}
+                                components={d().components}
+                                isAdmin={d().access.role === "admin"}
+                                paths={d().access.role === "editor" ? d().access.paths : ["/"]}
+                                review={d().reviews.find((r) => r.id === pageId())}
+                                onSubmit={async (value) => {
+                                  await api.submit(value);
+                                  await refresh();
+                                  return value;
+                                }}
+                                onDirty={setDirty}
+                                onSave={async (value) => {
+                                  const result = await api.savePage(value);
+                                  await refresh();
+                                  return result;
+                                }}
+                                onPublish={async (value) => {
+                                  const result = await api.publish(value);
+                                  await refresh();
+                                  return result;
+                                }}
+                                onDelete={async (value) => {
+                                  await api.deletePage(value.id);
+                                  setPageId();
+                                  setDirty(false);
+                                  await refresh();
+                                }}
+                              />
+                            )}
+                          </For>
                         )}
-                      </For>
-                    )}
+                      </Show>
+                    </Show>
                   </Show>
                 </Show>
               );
@@ -369,6 +422,7 @@ export function AdminApp() {
 function PageHome(p: {
   pages: Page[];
   templates: Template[];
+  paths: string[];
   onChoose: (id: string) => void;
   onCreate: (v: Pick<Page, "title" | "slug" | "template_id">) => Promise<void>;
 }) {
@@ -379,7 +433,7 @@ function PageHome(p: {
   const [busy, setBusy] = createSignal(false);
   const [expanded, setExpanded] = createSignal(new Set(pageParentPaths(p.pages)));
   const tree = () => buildPageTree(p.pages);
-  const openCreate = (path = "/") => {
+  const openCreate = (path = p.paths[0] || "/") => {
     setParent(path);
     setSegment("");
     setError("");
@@ -414,6 +468,7 @@ function PageHome(p: {
         </div>
         <button
           {...stylex.attrs(common.button, common.primary, styles.newPage)}
+          disabled={!p.paths.length}
           onClick={() => openCreate()}
         >
           New page
@@ -463,7 +518,15 @@ function PageHome(p: {
                 value={parent()}
                 onChange={(e) => setParent(e.currentTarget.value)}
               >
-                <For each={pageParentPaths(p.pages)}>
+                <For
+                  each={[
+                    ...new Set([
+                      ...pageParentPaths(p.pages),
+                      ...p.paths,
+                      ...p.paths.map(parentPath),
+                    ]),
+                  ].sort()}
+                >
                   {(path) => <option value={path}>{path}</option>}
                 </For>
               </select>

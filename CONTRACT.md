@@ -10,11 +10,18 @@ Rust Axum server, MySQL 8.4 persistence, Solid 2 SPA. API JSON uses snake_case.
 - Template: `{id, name, description, regions: Region[]}`
 - Block: `{id, component_id, region, fields: Record<string,string>}`
 - Page: `{id, title, slug, template_id, blocks: Block[], revision: number, published_revision: number | null}`. Slugs are case-sensitive absolute paths such as `/` and `/about`, at most 2048 bytes.
-- Bootstrap: `{pages: Page[], templates: Template[], components: Component[]}`
+- Bootstrap: `{pages: Page[], templates: Template[], components: Component[], access: Access, reviews: Review[]}`. Pages are filtered to current grants; reviews require access to both submitted and current paths.
+- Access: `{id: string, role: "admin" | "reviewer" | "editor", paths: string[]}`. Paths are effective individual plus group grants. Admin and reviewer have all-page access regardless of paths.
+- Member: `{id, name, role, paths: string[], groups: string[]}`. ID is the stable authenticated provider user ID. No email matching or external invitations.
+- Group: `{id, name, paths: string[]}`.
+- Organization: `{revision: number, members: Member[], groups: Group[]}`. One installation, one organization.
+- Review: `{id: page_id, submission_id: UUID, content: {page, template, components}, submitted_by: user_id, status: "submitted" | "changes_requested" | "approved", feedback: string, reviewed_by: user_id | null}`. One latest review per page, not an audit log.
 
 ## API
 
-All `/api/admin/*` require a signed-in session. Errors are `{error: string}` with suitable HTTP status. Unknown IDs return 404. Mutations validate references and rules before persistence.
+All `/api/admin/*` require a signed-in session and local membership, except trusted password recovery administrators. Unknown authenticated identities return 403, not automatic membership. Errors are `{error: string}` with suitable HTTP status. Unknown IDs return 404. Mutations validate references and rules before persistence. Authorization reads and changes run together under the database lock; revoking membership or grants takes effect on the next operation.
+
+Admin has all permissions. Reviewer can read/edit every draft and approve or request changes, but cannot manage members, mutate templates/components, delete pages, or publish directly. Editor can read/create/edit/move/submit pages only within individual or group grants. Grants include the exact path and segment-aware descendants, never lexical prefixes. Moves check every old/new descendant path as well as the moved page. Grants remain at their configured paths after moves. All known members can read definitions for authoring. Public content reads only published snapshots and needs no membership.
 
 - `GET /api/auth/config` returns `{method: "password"}` or `{method: "redirect", label: string}`. It never returns secrets. Login UI waits for this response and shows an error with retry if it fails.
 - `POST /api/login` with `{password}` is available only in password mode. Returns 204 and sets an HttpOnly SameSite=Strict session cookie. `BADDIE_AUTH` defaults to `password`, requiring `BADDIE_ADMIN_PASSWORD`. No default password.
@@ -23,8 +30,12 @@ All `/api/admin/*` require a signed-in session. Errors are `{error: string}` wit
 - `GET /api/admin/bootstrap` returns Bootstrap.
 - `POST /api/admin/pages` with `{title, slug, template_id}` returns Page, 201, empty blocks and revision 1.
 - `PUT /api/admin/pages/{id}` with full Page updates draft and returns Page. Require matching revision, increment on save; stale writes return 409. Changing template must validate all blocks. A changed slug atomically moves all descendants by path-segment prefix and increments their revisions too. Reject root moves, moves into the same subtree, invalid descendant paths, and destination collisions. Published snapshots remain unchanged. Reload bootstrap after a move.
-- `POST /api/admin/pages/{id}/publish` with `{revision}` validates and snapshots saved draft, returns Page. Stale revision returns 409.
-- `DELETE /api/admin/pages/{id}` returns 204. Returns 409 if any descendant draft remains; no recursive deletion.
+- `POST /api/admin/pages/{id}/publish` admin only, with `{revision}` validates and snapshots saved draft, returns Page. Stale revision returns 409. Snapshot slug conflicts roll back, never overwrite another page's snapshot.
+- `POST /api/admin/pages/{id}/submit` with `{revision}` validates the saved page and stores an exact page/template/used-component snapshot. Returns Review with a new submission_id and submitted status. Replaces any previous review. Stale revision returns 409.
+- `POST /api/admin/reviews/{page_id}` admin/reviewer only, with `{revision, submission_id, approve: boolean, feedback: string}` returns Review. Requires pending status, exact submission ID and revision, and equality between the current page/schema and submitted snapshot. Changed drafts, moves, imports, schema edits or resubmissions make old approvals return 409. `approve:true` atomically publishes and marks approved. `approve:false` requires nonempty feedback and marks changes_requested. No separate later publication step. Reviewers may approve their own submissions.
+- `GET /api/admin/organization` admin only, returns Organization.
+- `PUT /api/admin/organization` admin only, accepts the full Organization with matching revision and returns the next revision. Stale updates return 409. Validates unique member/group IDs, required names, canonical paths, and group references. Removing a group requires removing its member references. Once a local admin exists, at least one must remain. Removing a member denies future operations without logging out.
+- `DELETE /api/admin/pages/{id}` admin only, returns 204. Returns 409 if any descendant draft remains; no recursive deletion. Deletes its snapshot and review.
 - `POST /api/admin/templates` with Template excluding id returns Template, 201.
 - `PUT /api/admin/templates/{id}` with Template validates existing drafts and returns Template. Reject changes that invalidate existing pages. Published snapshots remain unchanged.
 - `POST /api/admin/components` with Component excluding id returns Component, 201.
@@ -46,6 +57,8 @@ Push uses the same database lock as API mutations, merges the selected kinds by 
 
 Security: no raw HTML field rendering, validate URL fields as relative paths or http/https URLs, refuse protocol-relative URLs. Cookie auth mutations require same-origin Origin when present. Production TLS provided by reverse proxy, configurable Secure cookie. Request size limit. Do not log password or cookie.
 
-Authentication is replaceable through `auth::AuthProvider` and `AppState::open_with_auth`. The provider supplies its own state-bound login routes and validates headers into an `Editor { id }`, granting full editor access. CMS middleware rejects unauthorized admin requests, retains same-origin mutation checks, and adds Editor to request extensions. Public content does not call the provider. Custom auth routes must enforce their own CSRF checks and keep credentials server-side.
+Authentication is replaceable through `auth::AuthProvider` and `AppState::open_with_auth`. The provider supplies its own state-bound login routes and validates headers into an `Editor { id }`; identity alone grants no CMS permissions. CMS middleware retains same-origin mutation checks and adds Editor to request extensions. Handlers resolve local membership inside their transaction. Public content does not call the provider. Custom auth routes must enforce their own CSRF checks and keep credentials server-side. `AuthProvider::recovery_admin` defaults to false. Only the built-in password provider grants its shared session recovery-admin privileges; returning `shared-admin` from another provider does not bypass membership.
+
+`BADDIE_BOOTSTRAP_ADMIN_ID` creates one admin only when the local organization record is first initialized. Remove it afterward; it never recreates removed members. Existing installations recover by temporarily selecting password mode and adding the provider user ID through Organization, then restoring their auth mode. Password auth remains mutually exclusive with WorkOS. Database CLI access is trusted operator access and bypasses HTTP membership; review comparisons still detect imported content/schema changes.
 
 Built-in sessions expire after twelve hours or server restart. WorkOS requires `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI` and `WORKOS_ORGANIZATION_ID`; an HTTPS callback also requires secure cookies. The backend refreshes WorkOS sessions on access after at most five minutes or token expiry, whichever comes first. Refresh rechecks the organization and user, rotates the refresh token, and rejects revoked sessions. Failed refresh discards the local session. Auth responses use `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Do not log callback query strings or WorkOS tokens.

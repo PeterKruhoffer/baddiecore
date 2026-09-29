@@ -51,9 +51,15 @@ WORKOS_REDIRECT_URI=https://cms.example.com/api/auth/callback
 
 Use your own WorkOS environment for each independently operated installation. Keep the API key in secret storage, never in frontend variables or source control. Password configuration is unused in WorkOS mode and can be removed.
 
-In the WorkOS dashboard, enable hosted AuthKit, register the exact callback URL above and allow `https://cms.example.com/admin` as a logout redirect. Create a dedicated organization for this CMS's editors and invite them into it. Disable public sign-ups and automatic organization enrollment if access must be invitation-only. Every verified user authenticated into this configured organization has full CMS access, regardless of their WorkOS role. A WorkOS account outside that organization grants no access.
+In the WorkOS dashboard, enable hosted AuthKit, register the exact callback URL above and allow `https://cms.example.com/admin` as a logout redirect. Create a dedicated organization for this CMS's editors and invite them into it. Disable public sign-ups and automatic organization enrollment if access must be invitation-only. Authentication into this organization does not grant CMS access by itself. Add the user's stable WorkOS user ID to the CMS's local Organization screen. WorkOS roles do not control local permissions. A WorkOS account outside the configured organization grants no access.
 
-Editors use the hosted sign-in page and return to `/admin`. The server checks single-use browser state and PKCE, exchanges the code, and stores tokens in memory. The browser receives only an opaque HttpOnly session cookie. WorkOS sessions refresh on the next admin request after at most five minutes, or earlier if the access token expires. Revocation and membership changes take effect on refresh, not immediately. Refresh failures deny access and discard the local session. Sign-out clears the local session and redirects the browser to WorkOS to end its session too. Run one replica; restarting ends local sessions.
+### Bootstrap and recover administrator access
+
+One CMS installation is one organization. On the **first startup with local membership support**, `BADDIE_BOOTSTRAP_ADMIN_ID=<stable-provider-user-id>` creates that local administrator. Remove the variable afterward. It applies only when the organization record is first created; restarting never restores a removed member or overwrites local membership. Unknown WorkOS and custom-provider IDs are denied by default, including an ID named `shared-admin`.
+
+For an existing installation or recovery, temporarily restart the server with `BADDIE_AUTH=password` and a securely configured `BADDIE_ADMIN_PASSWORD`. The password session is a recovery administrator independent of local membership. Use Organization to add or repair administrator memberships, then restore WorkOS configuration and restart. Password login is deliberately not available alongside WorkOS. Keep password recovery restricted to the operator; all password users have full access. No external WorkOS mutation is required.
+
+Editors use the hosted sign-in page and return to `/admin`. The server checks single-use browser state and PKCE, exchanges the code, and stores tokens in memory. The browser receives only an opaque HttpOnly session cookie. WorkOS sessions refresh on the next admin request after at most five minutes, or earlier if the access token expires. WorkOS revocation and WorkOS organization changes take effect on refresh; local CMS membership changes take effect on the next operation. Refresh failures deny access and discard the local session. Sign-out clears the local session and redirects the browser to WorkOS to end its session too. Run one replica; restarting ends local sessions.
 
 For local development, use a WorkOS staging environment and an HTTP loopback callback, with `BADDIE_SECURE_COOKIE=false`. When using the Vite dev server, register its browser-facing origin with `/api/auth/callback`, not the backend's port. Production callbacks require HTTPS and secure cookies. Configure the reverse proxy to omit query strings on `/api/auth/callback` from access logs because callbacks contain authorization codes.
 
@@ -63,7 +69,7 @@ The Railway configuration defaults to password auth. To opt in before applying i
 
 Implement `auth::AuthProvider` and pass `Arc::new(your_provider)` to `AppState::open_with_auth` in `src/main.rs`. No content handlers need changing. This is a Rust source extension, not a runtime plugin or a `BADDIE_AUTH=custom` option.
 
-- `authorize(&HeaderMap)` returns an `Editor { id }` only after validating both identity and CMS access. All editors currently have full access. Return 401 for absent or invalid credentials. CMS middleware puts the editor in request extensions and preserves its same-origin mutation checks.
+- `authorize(&HeaderMap)` returns an `Editor { id }` after validating identity. Use a stable provider ID, not email. Return 401 for absent or invalid credentials. The CMS resolves local membership inside each content transaction and returns 403 for unknown identities. CMS middleware puts the identity in request extensions and preserves its same-origin mutation checks. The optional `recovery_admin` trait method defaults to false; override it only for a trusted operator recovery mechanism, never based on an untrusted role or ID header.
 - `routes()` returns a state-bound Axum `Router` for login, logout and callbacks. Match the frontend contract in `CONTRACT.md`. Redirect-based providers can reuse the existing login UI through `GET /api/auth/config`.
 - Your provider owns session expiry, revocation, CSRF protection for its routes, and secure credential storage. If using proxy identity headers, block direct backend access and make the trusted proxy strip client-supplied identity headers before setting its own.
 
@@ -75,12 +81,22 @@ The built-in implementations live in `src/auth.rs` and `src/auth/workos.rs`. Aut
 - Templates define named regions, component allowlists, and maximum counts. An empty allowlist permits nothing.
 - Component definitions have typed text, textarea, or URL fields and a renderer. Hero, text, callout, and cards renderers ship with this version. Cards render one body line per card.
 - The experience editor renders the page with the same renderer as the public site. Select a block to edit its fields, add allowed components, drag to reorder, or use the move buttons.
-- Save draft keeps edits private. Publish saves and snapshots the page, template, and component definitions together. Later draft or schema edits do not alter that snapshot.
+- Save draft keeps edits private. Administrators can publish directly. Editors submit new or existing pages for review; reviewers approve and publish or request changes with feedback. Publication snapshots the page, template, and component definitions together. Later draft or schema edits do not alter that snapshot.
 - Concurrent page saves return a conflict instead of overwriting another revision. Template and component changes that would invalidate existing drafts are rejected.
 
-The Pages view is an expandable tree. Choose a parent and a URL segment when creating or moving a page. `/about/team` belongs under `/about`; paths are the hierarchy, with no separate parent IDs. Missing intermediate pages appear as folders, so existing nested URLs still work. Renaming or moving a page moves every descendant draft URL in one transaction and increments their revisions. A stale editor must reload before saving. The root page `/` cannot move, and a page with descendants cannot be deleted until those descendants are moved or deleted.
+The sidebar keeps the page tree under Site available while editing. Administrators also see templates and components under System. Search finds accessible saved pages by title or path, individual blocks by component name or field text, and administrator-only definitions by name or description. Multiple search words must all match the same result. A block result opens that page with its properties selected; navigation asks before discarding unsaved edits. Search does not include unsaved changes or older published snapshots.
+
+Choose a parent and a URL segment when creating or moving a page. `/about/team` belongs under `/about`; paths are the hierarchy, with no separate parent IDs. Missing intermediate pages appear as folders, so existing nested URLs still work. Renaming or moving a page moves every descendant draft URL in one transaction and increments their revisions. A stale editor must reload before saving. The root page `/` cannot move, and a page with descendants cannot be deleted until those descendants are moved or deleted.
 
 Moving a draft does not change published URLs. Publish each affected page when ready; there are no automatic redirects or link rewrites.
+
+### Membership and review
+
+Administrators manage membership and groups, edit schemas, delete pages, and publish directly. Reviewers, shown as super users in the membership form, can edit all pages and decide submissions, but cannot manage membership, change schemas, delete pages, or bypass review through direct publish. Editors can read, create, edit, move, and submit drafts only inside their individual or group path grants. All members can read component and template definitions for authoring.
+
+A grant for `/news` covers `/news` and `/news/story`, not `/newspaper`. Grants are case-sensitive and remain tied to paths when pages move. `/` covers everything. Editors with no grants see no drafts. A move requires access to the old and new paths of the page and every descendant; a denied move changes nothing. Membership changes take effect on the next operation without signing in again. Local authorization and data changes share a database transaction. Once a local administrator exists, the API prevents removing the last one.
+
+Use **Submit for review** in the page editor, then **Reviews** to inspect the submitted preview and exact data. Feedback appears in Reviews and the page editor. Each submission replaces the previous review for that page and gets a unique submission ID. Approval checks that ID, pending status, revision, full draft content, template, and used component definitions under the database lock. Any mismatch returns 409 and requires resubmission. This also catches CLI imports, subtree moves, schema edits, and replacement submissions at the same revision. Request changes requires nonempty feedback. Approval publishes immediately. Administrators and reviewers may approve their own submissions; this skeleton does not enforce separation of duties or keep an audit history of earlier reviews.
 
 Paths use ASCII letters, numbers, hyphens, underscores, and slash-separated segments, up to 2048 bytes. Paths are case-sensitive. `/admin`, `/api`, `/health`, and `/assets` are reserved. Rules in this version govern placement, counts, required fields, and field types, not audience targeting or personalization.
 
@@ -135,7 +151,7 @@ Vite+ proxies the API to the Rust server. A production build uses `pnpm --dir we
 # Example shape: mysql://root:<password>@127.0.0.1:3306
 cargo test --locked
 cargo clippy --all-targets -- -D warnings
-node --experimental-strip-types --test tests/page-tree.test.mjs
+node --experimental-strip-types --test tests/*.test.mjs
 pnpm --dir web run check
 pnpm --dir web run typecheck
 pnpm --dir web run build
@@ -153,4 +169,4 @@ Add renderer names to the Rust `Renderer` enum, the frontend `RendererName` type
 
 Run one CMS replica because sessions are process-local. Back up MySQL with `mysqldump --single-transaction` or Railway's database backups. Test restores before relying on backups. Tables use InnoDB. Database transactions serialize validation and writes through a lock row, including during overlapping deployments. Schema migration tooling beyond initial table creation is not yet included.
 
-Current limits include no media library, rich-text editor, localization, roles, workflow approvals, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked; database operations are serialized.
+Current limits include no media library, rich-text editor, localization, review audit history, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked; database operations are serialized.

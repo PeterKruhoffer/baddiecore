@@ -43,9 +43,40 @@ export interface Bootstrap {
   pages: Page[];
   templates: Template[];
   components: ComponentDef[];
+  access: Access;
+  reviews: Review[];
 }
 export interface Content {
   page: Page;
   template: Template;
   components: ComponentDef[];
+}
+export type Role = "admin" | "reviewer" | "editor";
+export interface Access {
+  id: string;
+  role: Role;
+  paths: string[];
+}
+export interface Member extends Access {
+  name: string;
+  groups: string[];
+}
+export interface Group {
+  id: string;
+  name: string;
+  paths: string[];
+}
+export interface Organization {
+  revision: number;
+  members: Member[];
+  groups: Group[];
+}
+export interface Review {
+  id: string;
+  submission_id: string;
+  content: Content;
+  submitted_by: string;
+  status: "submitted" | "changes_requested" | "approved";
+  feedback: string;
+  reviewed_by: string | null;
 }

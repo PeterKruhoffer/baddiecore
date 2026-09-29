@@ -28,7 +28,7 @@ use crate::{ApiError, Result};
 mod workos;
 pub use workos::WorkOs;
 
-/// Returning an Editor grants full CMS access. Authentication alone is not enough.
+/// Authenticated identity. Local organization membership grants CMS access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Editor {
     pub id: String,
@@ -41,6 +41,10 @@ pub trait AuthProvider: Send + Sync {
     /// Supply /api/auth/config, /api/login and /api/logout, plus any callbacks.
     fn routes(&self) -> Router;
     fn authorize<'a>(&'a self, headers: &'a HeaderMap) -> Authorization<'a>;
+    /// Only a trusted recovery provider should override this. IDs alone never grant admin.
+    fn recovery_admin(&self, _editor: &Editor) -> bool {
+        false
+    }
 }
 
 const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
@@ -189,6 +193,10 @@ impl Auth {
 }
 
 impl AuthProvider for Auth {
+    fn recovery_admin(&self, editor: &Editor) -> bool {
+        matches!(self.method.as_ref(), Method::Password(_)) && editor.id == "shared-admin"
+    }
+
     fn routes(&self) -> Router {
         Router::new()
             .route("/api/auth/config", get(config))

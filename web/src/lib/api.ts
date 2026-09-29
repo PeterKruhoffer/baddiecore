@@ -1,4 +1,12 @@
-import type { Bootstrap, ComponentDef, Content, Page, Template } from "../types";
+import type {
+  Bootstrap,
+  ComponentDef,
+  Content,
+  Organization,
+  Page,
+  Review,
+  Template,
+} from "../types";
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -32,6 +40,27 @@ export const api = {
     }),
   logout: () => request<{ redirect_url: string } | undefined>("/api/logout", { method: "POST" }),
   bootstrap: () => request<Bootstrap>("/api/admin/bootstrap"),
+  organization: () => request<Organization>("/api/admin/organization"),
+  saveOrganization: (value: Organization) =>
+    request<Organization>("/api/admin/organization", {
+      method: "PUT",
+      body: JSON.stringify(value),
+    }),
+  submit: (page: Page) =>
+    request<Review>(`/api/admin/pages/${encodeURIComponent(page.id)}/submit`, {
+      method: "POST",
+      body: JSON.stringify({ revision: page.revision }),
+    }),
+  review: (review: Review, approve: boolean, feedback: string) =>
+    request<Review>(`/api/admin/reviews/${encodeURIComponent(review.id)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        revision: review.content.page.revision,
+        submission_id: review.submission_id,
+        approve,
+        feedback,
+      }),
+    }),
   content: (slug: string) => request<Content>(`/api/content?slug=${encodeURIComponent(slug)}`),
   createPage: (value: Pick<Page, "title" | "slug" | "template_id">) =>
     request<Page>("/api/admin/pages", {

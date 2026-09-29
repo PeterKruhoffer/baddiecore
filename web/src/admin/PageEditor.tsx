@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
-import type { Block, ComponentDef, Page, Region, Template } from "../types";
+import type { Block, ComponentDef, Page, Region, Review, Template } from "../types";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
 import { common } from "../common.stylex";
 import { joinPath, pageParentPaths, parentPath, pathSegment } from "./pageTree";
@@ -122,8 +122,12 @@ type Props = {
   pages: Page[];
   templates: Template[];
   components: ComponentDef[];
+  isAdmin: boolean;
+  paths: string[];
+  review?: Review;
   onSave: (p: Page) => Promise<Page>;
   onPublish: (p: Page) => Promise<Page>;
+  onSubmit: (p: Page) => Promise<Page>;
   onDelete: (p: Page) => Promise<void>;
   onDirty: (dirty: boolean) => void;
 };
@@ -140,9 +144,9 @@ export function PageEditor(p: Props) {
   const template = () => p.templates.find((t) => t.id === draft().template_id);
   const isRoot = () => p.page.slug === "/";
   const availableParents = () =>
-    pageParentPaths(p.pages).filter(
-      (path) => path !== p.page.slug && !path.startsWith(`${p.page.slug}/`),
-    );
+    [...new Set([...pageParentPaths(p.pages), ...p.paths, parentPath(p.page.slug)])]
+      .sort()
+      .filter((path) => path !== p.page.slug && !path.startsWith(`${p.page.slug}/`));
   const validPath = () => isRoot() || /^[A-Za-z0-9_-]+$/.test(segment());
   const update = (value: Page) => {
     setDraft(value);
@@ -198,15 +202,15 @@ export function PageEditor(p: Props) {
       setBusy("");
     }
   }
-  async function publish() {
-    setBusy("publish");
+  async function publish(submit = false) {
+    setBusy(submit ? "submit" : "publish");
     setError("");
     try {
-      const saved = await p.onSave(draft());
+      const saved = dirty() ? await p.onSave(draft()) : draft();
       setDraft(structuredClone(saved));
       setDirty(false);
       p.onDirty(false);
-      setDraft(structuredClone(await p.onPublish(saved)));
+      setDraft(structuredClone(await (submit ? p.onSubmit(saved) : p.onPublish(saved))));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -255,22 +259,43 @@ export function PageEditor(p: Props) {
             {busy() === "save" ? "Saving…" : "Save draft"}
           </button>
           <button
-            {...stylex.attrs(common.button, common.primary)}
+            {...stylex.attrs(common.button, !p.isAdmin && common.primary)}
             disabled={!!busy() || !validPath()}
-            onClick={publish}
+            onClick={() => void publish(true)}
           >
-            {busy() === "publish" ? "Publishing…" : "Publish"}
+            {busy() === "submit" ? "Submitting…" : "Submit for review"}
           </button>
-          <button
-            {...stylex.attrs(common.button, common.danger)}
-            aria-label="Delete page"
-            disabled={!!busy()}
-            onClick={deletePage}
-          >
-            Delete
-          </button>
+          <Show when={p.isAdmin}>
+            <button
+              {...stylex.attrs(common.button, common.primary)}
+              disabled={!!busy() || !validPath()}
+              onClick={() => void publish()}
+            >
+              {busy() === "publish" ? "Publishing…" : "Publish"}
+            </button>
+            <button
+              {...stylex.attrs(common.button, common.danger)}
+              aria-label="Delete page"
+              disabled={!!busy()}
+              onClick={deletePage}
+            >
+              Delete
+            </button>
+          </Show>
         </div>
       </header>
+      <Show when={p.review}>
+        {(review) => (
+          <p {...stylex.attrs(styles.slug)} role="status">
+            Review: {review().status.replaceAll("_", " ")} · Submitted revision{" "}
+            {review().content.page.revision}
+            {review().content.page.revision !== draft().revision
+              ? " · Draft changed; submit again"
+              : ""}
+            {review().feedback ? ` · Feedback: ${review().feedback}` : ""}
+          </p>
+        )}
+      </Show>
       {error() && (
         <p {...stylex.attrs(common.error)} role="alert">
           {error()}
@@ -409,7 +434,7 @@ export function PageEditor(p: Props) {
                     e.currentTarget.value = "";
                   }}
                 >
-                  <option value="">+ Add component</option>
+                  <option value="">+ Add block</option>
                   <For each={p.components.filter((c) => region.allowed_components.includes(c.id))}>
                     {(c) => <option value={c.id}>{c.name}</option>}
                   </For>
@@ -487,7 +512,7 @@ export function PageEditor(p: Props) {
                 <>
                   <div {...stylex.attrs(styles.inspectorTitle)}>
                     <div>
-                      <strong>{def().name}</strong>
+                      <strong>{def().name}</strong>{" "}
                       <small {...stylex.attrs(styles.small)}>{block()?.region}</small>
                     </div>
                     <button
