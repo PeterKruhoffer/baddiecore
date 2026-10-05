@@ -12,6 +12,7 @@ services:
       WORKOS_REDIRECT_URI: ${WORKOS_REDIRECT_URI:-}
       WORKOS_ORGANIZATION_ID: ${WORKOS_ORGANIZATION_ID:-}
       BADDIE_SECURE_COOKIE: ${BADDIE_SECURE_COOKIE:-false}
+      BADDIE_ORIGIN: ${BADDIE_ORIGIN:-}
       DATABASE_URL: mysql://baddiecore:${MYSQL_PASSWORD:?Set a URL-safe MYSQL_PASSWORD in .env}@mysql:3306/baddiecore
     depends_on:
       mysql:

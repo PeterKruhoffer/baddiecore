@@ -12,8 +12,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use mysql::{Opts, Pool, Transaction, TxOpts, prelude::Queryable};
+use mysql::{Opts, Pool, PooledConn, Transaction, TxOpts, prelude::Queryable};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tower_http::{
     limit::RequestBodyLimitLayer,
     services::{ServeDir, ServeFile},
@@ -89,10 +90,14 @@ pub struct Bootstrap {
     pub pages: Vec<Page>,
     pub templates: Vec<Template>,
     pub components: Vec<Component>,
-    #[serde(default)]
-    pub access: Option<workflow::Access>,
-    #[serde(default)]
+    pub access: workflow::Access,
     pub reviews: Vec<workflow::Review>,
+}
+
+struct StoredData {
+    pages: Vec<Page>,
+    templates: Vec<Template>,
+    components: Vec<Component>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Content {
@@ -105,6 +110,8 @@ pub struct Content {
 pub struct AppState {
     db: Pool,
     auth: Arc<dyn auth::AuthProvider>,
+    database_slots: Arc<Semaphore>,
+    origin: auth::OriginPolicy,
 }
 
 #[derive(Debug)]
@@ -143,9 +150,16 @@ impl AppState {
         database_url: &str,
         auth: Arc<dyn auth::AuthProvider>,
     ) -> std::result::Result<Self, String> {
+        let origin = auth.origin_policy()?;
         let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
-        let db = Pool::new(opts).map_err(|_| "could not connect to MySQL")?;
-        let mut conn = db.get_conn().map_err(|_| "could not connect to MySQL")?;
+        let db = Pool::new(opts).map_err(|e| {
+            db_error(e);
+            "could not connect to MySQL"
+        })?;
+        let mut conn = db.get_conn().map_err(|e| {
+            db_error(e);
+            "could not connect to MySQL"
+        })?;
         for statement in [
             "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
             "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
@@ -156,10 +170,18 @@ impl AppState {
             "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ] {
-            conn.query_drop(statement)
-                .map_err(|_| "could not initialize MySQL schema")?;
+            conn.query_drop(statement).map_err(|e| {
+                db_error(e);
+                "could not initialize MySQL schema"
+            })?;
         }
-        let state = Self { db, auth };
+        // Bound running and queued blocking jobs independently of Tokio's thread pool.
+        let state = Self {
+            db,
+            auth,
+            database_slots: Arc::new(Semaphore::new(16)),
+            origin,
+        };
         state
             .transaction(|db| workflow::initialize(db))
             .map_err(|e| e.1)?;
@@ -304,7 +326,7 @@ impl AppState {
     }
 
     fn transaction<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> Result<T>) -> Result<T> {
-        database_transaction(&self.db, f)
+        database_transaction(&self.db, TransactionMode::Commit, f)
     }
 
     async fn run<T, F>(&self, f: F) -> Result<T>
@@ -312,20 +334,59 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
     {
-        let state = self.clone();
-        tokio::task::spawn_blocking(move || state.transaction(f))
+        self.blocking(move |db| database_transaction(db, TransactionMode::Commit, f))
             .await
+    }
+
+    async fn read<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut PooledConn) -> Result<T> + Send + 'static,
+    {
+        self.blocking(move |db| f(&mut db.get_conn().map_err(db_error)?))
+            .await
+    }
+
+    async fn blocking<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Pool) -> Result<T> + Send + 'static,
+    {
+        let permit = self
+            .database_slots
+            .clone()
+            .try_acquire_owned()
             .map_err(|_| {
                 ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "database task failed".into(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "database is busy; retry later".into(),
                 )
-            })?
+            })?;
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            // Keep the permit until the job ends, even if its HTTP request is cancelled.
+            let _permit = permit;
+            f(&db)
+        })
+        .await
+        .map_err(|_| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "database task failed".into(),
+            )
+        })?
     }
+}
+
+#[derive(Clone, Copy)]
+enum TransactionMode {
+    Commit,
+    Rollback,
 }
 
 fn database_transaction<T>(
     db: &Pool,
+    mode: TransactionMode,
     f: impl FnOnce(&mut Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
     let mut conn = db.get_conn().map_err(db_error)?;
@@ -336,7 +397,11 @@ fn database_transaction<T>(
     tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
         .map_err(db_error)?;
     let result = f(&mut tx)?;
-    tx.commit().map_err(db_error)?;
+    match mode {
+        TransactionMode::Commit => tx.commit(),
+        TransactionMode::Rollback => tx.rollback(),
+    }
+    .map_err(db_error)?;
     Ok(result)
 }
 
@@ -370,7 +435,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
 
 async fn health(State(state): State<AppState>) -> Result<StatusCode> {
     state
-        .run(|db| {
+        .read(|db| {
             db.query_drop("SELECT 1").map_err(db_error)?;
             Ok(StatusCode::OK)
         })
@@ -383,9 +448,10 @@ async fn require_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if request.method() != axum::http::Method::GET && !auth::same_origin(&headers) {
-        return ApiError(StatusCode::FORBIDDEN, "origin does not match host".into())
-            .into_response();
+    if request.method() != axum::http::Method::GET
+        && let Err(error) = state.origin.check(&headers)
+    {
+        return error.into_response();
     }
     match state.auth.authorize(&headers).await {
         Ok(editor) => {
@@ -402,28 +468,35 @@ async fn bootstrap(
 ) -> Result<Json<Bootstrap>> {
     state
         .run_as(editor, |db, access| {
-            let mut data = load_bootstrap(db)?;
+            let mut data = load_data(db, true)?;
             data.pages.retain(|page| access.allows(&page.slug));
+            let visible: HashSet<&str> = data.pages.iter().map(|page| page.id.as_str()).collect();
             let reviews: Vec<workflow::Review> = load_all(db, "reviews")?;
-            data.reviews = reviews
+            let reviews = reviews
                 .into_iter()
                 .filter(|review| {
-                    access.allows(&review.content.page.slug)
-                        && data.pages.iter().any(|p| p.id == review.id)
+                    access.allows(&review.content.page.slug) && visible.contains(review.id.as_str())
                 })
                 .collect();
-            data.access = Some(access);
-            Ok(Json(data))
+            Ok(Json(Bootstrap {
+                pages: data.pages,
+                templates: data.templates,
+                components: data.components,
+                access,
+                reviews,
+            }))
         })
         .await
 }
-fn load_bootstrap(db: &mut impl Queryable) -> Result<Bootstrap> {
-    Ok(Bootstrap {
-        pages: load_all(db, "pages")?,
+fn load_data(db: &mut impl Queryable, pages: bool) -> Result<StoredData> {
+    Ok(StoredData {
+        pages: if pages {
+            load_all(db, "pages")?
+        } else {
+            Vec::new()
+        },
         templates: load_all(db, "templates")?,
         components: load_all(db, "components")?,
-        access: None,
-        reviews: vec![],
     })
 }
 fn load_all<T: serde::de::DeserializeOwned>(
@@ -433,7 +506,7 @@ fn load_all<T: serde::de::DeserializeOwned>(
     let rows: Vec<String> = db
         .query(format!("SELECT data FROM {table} ORDER BY id"))
         .map_err(db_error)?;
-    rows.iter().map(|v| parse(v)).collect()
+    rows.into_iter().map(|v| parse(&v)).collect()
 }
 
 #[derive(Deserialize)]
@@ -563,17 +636,18 @@ async fn publish_page(
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
             }
-            Ok(Json(publish(db, page)?))
+            let snapshot = workflow::current_content(db, page)?;
+            Ok(Json(publish(db, snapshot)?))
         })
         .await
 }
-fn publish(db: &mut impl Queryable, mut page: Page) -> Result<Page> {
-    validate_page(db, &page)?;
-    page.published_revision = Some(page.revision);
-    let snapshot = workflow::current_content(db, page.clone())?;
+// Callers build and validate the snapshot within this same locked transaction.
+fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
+    snapshot.page.published_revision = Some(snapshot.page.revision);
+    let page = &snapshot.page;
     db.exec_drop(
         "UPDATE pages SET data=? WHERE id=?",
-        (json(&page)?, &page.id),
+        (json(page)?, &page.id),
     )
     .map_err(db_error)?;
     // Never use an upsert here: a conflicting slug belongs to another page.
@@ -584,7 +658,7 @@ fn publish(db: &mut impl Queryable, mut page: Page) -> Result<Page> {
         (&page.id, &page.slug, json(&snapshot)?),
     )
     .map_err(constraint_error)?;
-    Ok(page)
+    Ok(snapshot.page)
 }
 async fn delete_page(
     State(state): State<AppState>,
@@ -729,7 +803,7 @@ async fn content(
 ) -> Result<Json<Content>> {
     validate_slug(&query.slug)?;
     state
-        .run(move |db| {
+        .read(move |db| {
             let raw: Option<String> = db
                 .exec_first("SELECT data FROM snapshots WHERE slug=?", (query.slug,))
                 .map_err(db_error)?;
@@ -743,68 +817,107 @@ fn validate_schema_change(
     template: Option<&Template>,
     component: Option<&Component>,
 ) -> Result<()> {
-    let pages: Vec<Page> = load_all(db, "pages")?;
-    for page in pages {
-        if template.is_some_and(|t| t.id == page.template_id)
+    let mut pages: Vec<Page> = load_all(db, "pages")?;
+    pages.retain(|page| {
+        template.is_some_and(|t| t.id == page.template_id)
             || component.is_some_and(|c| page.blocks.iter().any(|b| b.component_id == c.id))
-        {
-            validate_page_with(db, &page, template, component)?;
-        }
+    });
+    let mut definitions = Definitions::load(db, &pages)?;
+    if let Some(template) = template {
+        definitions
+            .templates
+            .insert(template.id.clone(), template.clone());
+    }
+    if let Some(component) = component {
+        definitions
+            .components
+            .insert(component.id.clone(), component.clone());
+    }
+    for page in &pages {
+        definitions.validate(page)?;
     }
     Ok(())
 }
 fn validate_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
-    validate_page_with(db, page, None, None)
+    Definitions::load(db, std::slice::from_ref(page))?.validate(page)
 }
-fn validate_page_with(
-    db: &mut impl Queryable,
-    page: &Page,
-    replacement_template: Option<&Template>,
-    replacement_component: Option<&Component>,
-) -> Result<()> {
-    if page.title.trim().is_empty() {
-        return Err(ApiError::bad("title is required"));
-    }
-    validate_slug(&page.slug)?;
-    let template = if replacement_template.is_some_and(|t| t.id == page.template_id) {
-        replacement_template.unwrap().clone()
-    } else {
-        require_template(db, &page.template_id)?
-    };
-    let mut block_ids = HashSet::new();
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for block in &page.blocks {
-        if block.id.trim().is_empty() || !block_ids.insert(&block.id) {
-            return Err(ApiError::bad("block ids must be non-empty and unique"));
+
+// One operation's definitions, shared by validation and snapshot construction.
+// Never retained across transactions, so schema changes need no cache invalidation.
+struct Definitions {
+    templates: HashMap<String, Template>,
+    components: HashMap<String, Component>,
+}
+
+impl Definitions {
+    fn load(db: &mut impl Queryable, pages: &[Page]) -> Result<Self> {
+        let mut templates = HashMap::new();
+        let mut components = HashMap::new();
+        for page in pages {
+            if !templates.contains_key(&page.template_id) {
+                templates.insert(
+                    page.template_id.clone(),
+                    require_template(db, &page.template_id)?,
+                );
+            }
+            for block in &page.blocks {
+                if !components.contains_key(&block.component_id) {
+                    components.insert(
+                        block.component_id.clone(),
+                        require_component(db, &block.component_id)?,
+                    );
+                }
+            }
         }
-        let region = template
-            .regions
-            .iter()
-            .find(|r| r.name == block.region)
-            .ok_or_else(|| ApiError::bad(format!("unknown region: {}", block.region)))?;
-        if !region.allowed_components.contains(&block.component_id) {
-            return Err(ApiError::bad(format!(
-                "component {} is not allowed in region {}",
-                block.component_id, block.region
-            )));
-        }
-        *counts.entry(&block.region).or_default() += 1;
-        let component = if replacement_component.is_some_and(|c| c.id == block.component_id) {
-            replacement_component.unwrap().clone()
-        } else {
-            require_component(db, &block.component_id)?
-        };
-        validate_block(block, &component)?;
+        Ok(Self {
+            templates,
+            components,
+        })
     }
-    for region in &template.regions {
-        if counts.get(region.name.as_str()).copied().unwrap_or(0) > region.max_components {
-            return Err(ApiError::bad(format!(
-                "region {} exceeds maximum",
-                region.name
-            )));
+
+    fn validate(&self, page: &Page) -> Result<()> {
+        if page.title.trim().is_empty() {
+            return Err(ApiError::bad("title is required"));
         }
+        validate_slug(&page.slug)?;
+        let template = self
+            .templates
+            .get(&page.template_id)
+            .ok_or_else(ApiError::not_found)?;
+        let mut block_ids = HashSet::new();
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for block in &page.blocks {
+            if block.id.trim().is_empty() || !block_ids.insert(&block.id) {
+                return Err(ApiError::bad("block ids must be non-empty and unique"));
+            }
+            let region = template
+                .regions
+                .iter()
+                .find(|r| r.name == block.region)
+                .ok_or_else(|| ApiError::bad(format!("unknown region: {}", block.region)))?;
+            if !region.allowed_components.contains(&block.component_id) {
+                return Err(ApiError::bad(format!(
+                    "component {} is not allowed in region {}",
+                    block.component_id, block.region
+                )));
+            }
+            *counts.entry(&block.region).or_default() += 1;
+            let component = self
+                .components
+                .get(&block.component_id)
+                .ok_or_else(ApiError::not_found)?;
+            validate_block(block, component)?;
+        }
+        for region in &template.regions {
+            if counts.get(region.name.as_str()).copied().unwrap_or(0) > region.max_components {
+                return Err(ApiError::bad(format!(
+                    "region {} exceeds maximum",
+                    region.name
+                )));
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 fn validate_block(block: &Block, component: &Component) -> Result<()> {
     for key in block.fields.keys() {
@@ -939,16 +1052,6 @@ fn load_one<T: serde::de::DeserializeOwned>(
         .map_err(db_error)?;
     parse(&raw.ok_or_else(ApiError::not_found)?)
 }
-fn components_for_page(db: &mut impl Queryable, page: &Page) -> Result<Vec<Component>> {
-    let ids: HashSet<&str> = page
-        .blocks
-        .iter()
-        .map(|b| b.component_id.as_str())
-        .collect();
-    ids.into_iter()
-        .map(|id| require_component(db, id))
-        .collect()
-}
 fn insert_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
     db.exec_drop(
         "INSERT INTO pages VALUES(?,?,?)",
@@ -973,7 +1076,20 @@ fn parse<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
         )
     })
 }
-fn db_error(_: mysql::Error) -> ApiError {
+fn db_error(error: mysql::Error) -> ApiError {
+    // Server messages can contain submitted content. Log codes, never SQL or values.
+    match error {
+        mysql::Error::MySqlError(error) => eprintln!(
+            "MySQL operation failed: code={}, state={}",
+            error.code, error.state
+        ),
+        mysql::Error::IoError(error) => eprintln!(
+            "MySQL I/O failed: kind={:?}, os_code={:?}",
+            error.kind(),
+            error.raw_os_error()
+        ),
+        _ => eprintln!("MySQL operation failed: driver or protocol error"),
+    }
     ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database error".into())
 }
 fn constraint_error(error: mysql::Error) -> ApiError {
@@ -990,4 +1106,54 @@ fn title_case(value: &str) -> String {
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
         .replace('_', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn cancelled_requests_keep_their_database_slot_until_work_finishes() {
+        // An empty pool is sufficient: this test never connects to a database.
+        let state = AppState {
+            db: Pool::new(Opts::from_url("mysql://127.0.0.1/test?pool_min=0&pool_max=1").unwrap())
+                .unwrap(),
+            auth: Arc::new(auth::Auth::password("test".into(), false).unwrap()),
+            database_slots: Arc::new(Semaphore::new(1)),
+            origin: auth::OriginPolicy::from_env(false).unwrap(),
+        };
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, wait) = std::sync::mpsc::channel();
+        let running = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                state
+                    .blocking(move |_| {
+                        started.send(()).unwrap();
+                        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        ready.await.unwrap();
+        assert_eq!(
+            state.blocking(|_| Ok(())).await.unwrap_err().0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        running.abort();
+        assert!(running.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            state.blocking(|_| Ok(())).await.unwrap_err().0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        finish.send(()).unwrap();
+        let permit = tokio::time::timeout(Duration::from_secs(2), state.database_slots.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(permit);
+        assert_eq!(state.blocking(|_| Ok(42)).await.unwrap(), 42);
+    }
 }

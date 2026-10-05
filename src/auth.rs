@@ -18,6 +18,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -41,6 +42,12 @@ pub trait AuthProvider: Send + Sync {
     /// Supply /api/auth/config, /api/login and /api/logout, plus any callbacks.
     fn routes(&self) -> Router;
     fn authorize<'a>(&'a self, headers: &'a HeaderMap) -> Authorization<'a>;
+    /// CMS mutation origin policy. Custom providers default to the server environment.
+    fn origin_policy(&self) -> std::result::Result<OriginPolicy, String> {
+        let secure = std::env::var("BADDIE_SECURE_COOKIE")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        OriginPolicy::from_env(secure)
+    }
     /// Only a trusted recovery provider should override this. IDs alone never grant admin.
     fn recovery_admin(&self, _editor: &Editor) -> bool {
         false
@@ -50,6 +57,7 @@ pub trait AuthProvider: Send + Sync {
 const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 const LOGIN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_SESSIONS: usize = 128;
+const MAX_PENDING_LOGINS: usize = 128;
 
 #[derive(Clone)]
 pub struct Auth {
@@ -57,6 +65,7 @@ pub struct Auth {
     sessions: Arc<Mutex<Store<Arc<tokio::sync::Mutex<Session>>>>>,
     pending: Arc<Mutex<Store<String>>>,
     secure_cookie: bool,
+    origin: OriginPolicy,
 }
 
 enum Method {
@@ -85,18 +94,23 @@ impl<T> Store<T> {
     fn prune(&mut self, now: Instant) {
         self.entries.retain(|_, (expires, _)| *expires > now);
     }
-    fn insert(&mut self, key: String, value: T, now: Instant, lifetime: Duration) {
+    fn insert(
+        &mut self,
+        key: String,
+        value: T,
+        now: Instant,
+        lifetime: Duration,
+        capacity: usize,
+    ) -> Result<()> {
         self.prune(now);
-        if self.entries.len() >= MAX_SESSIONS
-            && let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, (expires, _))| *expires)
-                .map(|(key, _)| key.clone())
-        {
-            self.entries.remove(&oldest);
+        if self.entries.len() >= capacity {
+            return Err(ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "sign-in capacity reached; retry later".into(),
+            ));
         }
         self.entries.insert(key, (now + lifetime, value));
+        Ok(())
     }
     fn remove(&mut self, key: &str) -> Option<T> {
         self.prune(Instant::now());
@@ -109,23 +123,24 @@ impl Auth {
         if password.trim().is_empty() {
             return Err("BADDIE_ADMIN_PASSWORD must not be empty".into());
         }
-        Ok(Self::new(Method::Password(password), secure_cookie))
+        Self::new(Method::Password(password), secure_cookie)
     }
 
     pub fn workos(config: WorkOs, secure_cookie: bool) -> std::result::Result<Self, String> {
         if config.redirect_uri.scheme() == "https" && !secure_cookie {
             return Err("WorkOS HTTPS requires BADDIE_SECURE_COOKIE=true".into());
         }
-        Ok(Self::new(Method::WorkOs(Box::new(config)), secure_cookie))
+        Self::new(Method::WorkOs(Box::new(config)), secure_cookie)
     }
 
-    fn new(method: Method, secure_cookie: bool) -> Self {
-        Self {
+    fn new(method: Method, secure_cookie: bool) -> std::result::Result<Self, String> {
+        Ok(Self {
             method: Arc::new(method),
             sessions: Default::default(),
             pending: Default::default(),
             secure_cookie,
-        }
+            origin: OriginPolicy::from_env(secure_cookie)?,
+        })
     }
 
     pub fn from_env(secure_cookie: bool) -> std::result::Result<Self, String> {
@@ -163,7 +178,7 @@ impl Auth {
         sessions.entries.get(&token).map(|(_, s)| s.clone())
     }
 
-    fn issue(&self, session: Session, headers: &HeaderMap, response: &mut Response) {
+    fn issue(&self, session: Session, headers: &HeaderMap, response: &mut Response) -> Result<()> {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(old) = cookie_value(headers, "baddie_session") {
             sessions.remove(&old);
@@ -174,8 +189,10 @@ impl Auth {
             Arc::new(tokio::sync::Mutex::new(session)),
             Instant::now(),
             SESSION_LIFETIME,
-        );
+            MAX_SESSIONS,
+        )?;
         set_cookie(response, self.cookie("baddie_session", token));
+        Ok(())
     }
 
     fn cookie(&self, name: &'static str, value: String) -> Cookie<'static> {
@@ -193,6 +210,10 @@ impl Auth {
 }
 
 impl AuthProvider for Auth {
+    fn origin_policy(&self) -> std::result::Result<OriginPolicy, String> {
+        Ok(self.origin.clone())
+    }
+
     fn recovery_admin(&self, editor: &Editor) -> bool {
         matches!(self.method.as_ref(), Method::Password(_)) && editor.id == "shared-admin"
     }
@@ -217,8 +238,8 @@ impl AuthProvider for Auth {
 
     fn authorize<'a>(&'a self, headers: &'a HeaderMap) -> Authorization<'a> {
         Box::pin(async move {
-            let session = self.session(headers).ok_or(StatusCode::UNAUTHORIZED)?;
-            let mut session = session.lock().await;
+            let handle = self.session(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+            let mut session = handle.lock().await;
             if let (Method::WorkOs(config), Some(tokens)) =
                 (self.method.as_ref(), session.workos.as_mut())
                 && let Err(error) = config.validate(tokens).await
@@ -227,6 +248,20 @@ impl AuthProvider for Auth {
                     self.sessions.lock().unwrap().remove(&token);
                 }
                 return Err(error.0);
+            }
+            // Waiting for a refresh must not extend expiry or undo a concurrent logout.
+            let token = cookie_value(headers, "baddie_session").ok_or(StatusCode::UNAUTHORIZED)?;
+            if !self
+                .sessions
+                .lock()
+                .unwrap()
+                .entries
+                .get(&token)
+                .is_some_and(|(expires, current)| {
+                    *expires > Instant::now() && Arc::ptr_eq(current, &handle)
+                })
+            {
+                return Err(StatusCode::UNAUTHORIZED);
             }
             Ok(session.editor.clone())
         })
@@ -250,7 +285,7 @@ async fn password_login(
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Result<Response> {
-    check_origin(&headers)?;
+    auth.origin.check(&headers)?;
     let Method::Password(password) = auth.method.as_ref() else {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
@@ -279,12 +314,12 @@ async fn password_login(
         },
         &headers,
         &mut response,
-    );
+    )?;
     Ok(response)
 }
 
 async fn start_login(State(auth): State<Auth>, headers: HeaderMap) -> Result<Response> {
-    check_origin(&headers)?;
+    auth.origin.check(&headers)?;
     let Method::WorkOs(config) = auth.method.as_ref() else {
         return Err(ApiError::not_found());
     };
@@ -295,7 +330,13 @@ async fn start_login(State(auth): State<Auth>, headers: HeaderMap) -> Result<Res
     if let Some(old) = cookie_value(&headers, "baddie_login") {
         pending.remove(&old);
     }
-    pending.insert(state.clone(), verifier, Instant::now(), LOGIN_LIFETIME);
+    pending.insert(
+        state.clone(),
+        verifier,
+        Instant::now(),
+        LOGIN_LIFETIME,
+        MAX_PENDING_LOGINS,
+    )?;
     let url = config.authorization_url(&state, &challenge);
     let mut response = Redirect::to(url.as_str()).into_response();
     let mut cookie = auth.cookie("baddie_login", state);
@@ -320,8 +361,10 @@ async fn callback(
     let mut response = match result {
         Ok(session) => {
             let mut response = Redirect::to("/admin").into_response();
-            auth.issue(session, &headers, &mut response);
-            response
+            match auth.issue(session, &headers, &mut response) {
+                Ok(()) => response,
+                Err(error) => error.into_response(),
+            }
         }
         Err(_) => Redirect::to("/admin?auth_error=1").into_response(),
     };
@@ -360,7 +403,7 @@ async fn complete_login(auth: &Auth, headers: &HeaderMap, query: Callback) -> Re
 }
 
 async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Result<Response> {
-    check_origin(&headers)?;
+    auth.origin.check(&headers)?;
     let session = cookie_value(&headers, "baddie_session")
         .and_then(|token| auth.sessions.lock().unwrap().remove(&token));
     let mut response = StatusCode::NO_CONTENT.into_response();
@@ -383,28 +426,91 @@ fn set_cookie(response: &mut Response, cookie: Cookie<'_>) {
         .append(header::SET_COOKIE, cookie.to_string().parse().unwrap());
 }
 
-fn check_origin(headers: &HeaderMap) -> Result<()> {
-    if same_origin(headers) {
-        Ok(())
-    } else {
-        Err(ApiError(
-            StatusCode::FORBIDDEN,
-            "origin does not match host".into(),
-        ))
+/// Trusted browser-facing origin, or preserved Host plus the configured transport.
+#[derive(Clone)]
+pub struct OriginPolicy {
+    external: Option<Url>,
+    secure: bool,
+}
+
+impl OriginPolicy {
+    pub(crate) fn from_env(secure: bool) -> std::result::Result<Self, String> {
+        Self::new(
+            std::env::var("BADDIE_ORIGIN")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .as_deref(),
+            secure,
+        )
+    }
+
+    pub fn new(external: Option<&str>, secure: bool) -> std::result::Result<Self, String> {
+        let external = external
+            .map(|value| {
+                parse_origin(value)
+                    .ok_or("BADDIE_ORIGIN must be an HTTP(S) origin without a path".to_owned())
+            })
+            .transpose()?;
+        if external
+            .as_ref()
+            .is_some_and(|url| secure && url.scheme() != "https")
+        {
+            return Err("secure cookies require an HTTPS BADDIE_ORIGIN".into());
+        }
+        Ok(Self { external, secure })
+    }
+
+    pub(crate) fn check(&self, headers: &HeaderMap) -> Result<()> {
+        if self.allows(headers) {
+            Ok(())
+        } else {
+            Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "origin does not match host".into(),
+            ))
+        }
+    }
+
+    fn allows(&self, headers: &HeaderMap) -> bool {
+        let Some(origin) = headers.get(header::ORIGIN) else {
+            return true;
+        };
+        let Some(origin) = origin.to_str().ok().and_then(parse_origin) else {
+            return false;
+        };
+        if let Some(expected) = &self.external {
+            return origin.origin() == expected.origin();
+        }
+        let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+            return false;
+        };
+        let scheme = if self.secure { "https" } else { "http" };
+        parse_origin(&format!("{scheme}://{host}"))
+            .is_some_and(|expected| origin.origin() == expected.origin())
     }
 }
 
-pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        return true;
-    };
-    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .is_some_and(|v| v == host)
+fn parse_origin(value: &str) -> Option<Url> {
+    let (_, authority) = value.split_once("://")?;
+    if authority
+        .strip_suffix('/')
+        .unwrap_or(authority)
+        .contains('/')
+    {
+        return None;
+    }
+    let url = Url::parse(value).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\'))
+    .then_some(url)
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {

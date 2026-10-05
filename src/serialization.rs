@@ -3,16 +3,18 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt, fs,
-    path::Path,
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 use mysql::{Pool, Transaction, prelude::Queryable};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
 
 use crate::{
-    ApiError, Block, Component, Page, Template, database_transaction, insert_page, json,
-    load_bootstrap, validate_component, validate_page, validate_template,
+    ApiError, Block, Component, Definitions, Page, Template, TransactionMode, database_transaction,
+    insert_page, json, load_data, validate_component, validate_template,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -135,16 +137,17 @@ fn file_name(id: &str) -> String {
 
 /// Export components and templates, and optionally page drafts.
 pub fn pull(db: &Pool, directory: &Path, pages: bool, force: bool) -> Result<Counts, Error> {
-    let bootstrap = database_transaction(db, |tx| load_bootstrap(tx)).map_err(api_error)?;
+    let data = database_transaction(db, TransactionMode::Commit, |tx| load_data(tx, pages))
+        .map_err(api_error)?;
     let mut files = Vec::new();
-    for item in &bootstrap.components {
+    for item in &data.components {
         files.push(("components", &item.id, yaml("component", item)?));
     }
-    for item in &bootstrap.templates {
+    for item in &data.templates {
         files.push(("templates", &item.id, yaml("template", item)?));
     }
     if pages {
-        for item in &bootstrap.pages {
+        for item in &data.pages {
             files.push(("pages", &item.id, yaml("page", PageDraft::from(item))?));
         }
     }
@@ -158,8 +161,10 @@ pub fn pull(db: &Pool, directory: &Path, pages: bool, force: bool) -> Result<Cou
             if meta.file_type().is_symlink() || !meta.is_file() {
                 return Err(Error(format!("refusing unsafe output: {}", path.display())));
             }
-            let old = fs::read(&path).map_err(io_error)?;
-            if old != *bytes && !force {
+            if !force
+                && (meta.len() != bytes.len() as u64
+                    || fs::read(&path).map_err(|e| io_error("read", &path, e))? != *bytes)
+            {
                 return Err(Error(format!(
                     "{} has local changes (use --force to overwrite)",
                     path.display()
@@ -169,50 +174,100 @@ pub fn pull(db: &Pool, directory: &Path, pages: bool, force: bool) -> Result<Cou
     }
     // A pull is a snapshot of the selected kinds. Do not silently keep deleted
     // pages as files that a later push would recreate.
-    let mut stale = Vec::new();
+    let expected: HashSet<PathBuf> = files
+        .iter()
+        .map(|(group, id, _)| directory.join(group).join(file_name(id)))
+        .collect();
     let groups = if pages {
         &["components", "templates", "pages"][..]
     } else {
         &["components", "templates"][..]
     };
-    for group in groups {
-        let ids: Vec<String> = match *group {
-            "components" => read_group::<Component>(directory, group, "component")?
-                .into_iter()
-                .map(|x| x.id)
-                .collect(),
-            "templates" => read_group::<Template>(directory, group, "template")?
-                .into_iter()
-                .map(|x| x.id)
-                .collect(),
-            _ => read_group::<PageDraft>(directory, group, "page")?
-                .into_iter()
-                .map(|x| x.id)
-                .collect(),
-        };
-        for id in ids {
-            if !files.iter().any(|(g, i, _)| g == group && **i == id) {
-                stale.push(directory.join(group).join(file_name(&id)));
-            }
-        }
-    }
+    let stale = stale_exports(directory, groups, &expected)?;
     if !stale.is_empty() && !force {
         return Err(Error(
             "export contains items absent from the database; use --force to remove their files"
                 .into(),
         ));
     }
+    // Stage the complete snapshot before replacing anything. Renames are atomic per
+    // file, but a pull is intentionally not atomic across the whole directory.
+    let mut staged = Vec::with_capacity(files.len());
     for (group, id, bytes) in files {
-        fs::write(directory.join(group).join(file_name(id)), bytes).map_err(io_error)?;
+        let path = directory.join(group).join(file_name(id));
+        let mut temp = NamedTempFile::new_in(path.parent().expect("output has parent"))
+            .map_err(|e| io_error("create temporary output", &path, e))?;
+        temp.write_all(&bytes)
+            .map_err(|e| io_error("write temporary output", &path, e))?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|e| io_error("sync temporary output", &path, e))?;
+        // Close each file before staging the next; large exports must not exhaust FDs.
+        staged.push((temp.into_temp_path(), path));
+    }
+    for (temp, path) in staged {
+        temp.persist(&path)
+            .map_err(|e| io_error("replace", &path, e.error))?;
     }
     for path in stale {
-        fs::remove_file(path).map_err(io_error)?;
+        fs::remove_file(&path).map_err(|e| io_error("remove stale export", &path, e))?;
     }
     Ok(Counts {
-        components: bootstrap.components.len(),
-        templates: bootstrap.templates.len(),
-        pages: if pages { bootstrap.pages.len() } else { 0 },
+        components: data.components.len(),
+        templates: data.templates.len(),
+        pages: if pages { data.pages.len() } else { 0 },
     })
+}
+
+fn stale_exports(
+    directory: &Path,
+    groups: &[&str],
+    expected: &HashSet<PathBuf>,
+) -> Result<Vec<PathBuf>, Error> {
+    let mut stale = Vec::new();
+    for group in groups {
+        let dir = directory.join(group);
+        if fs::symlink_metadata(&dir).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+            continue;
+        }
+        reject_unsafe_directory(&dir)?;
+        let entries = fs::read_dir(&dir).map_err(|e| io_error("read directory", &dir, e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| io_error("read directory entry", &dir, e))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path).map_err(|e| io_error("inspect", &path, e))?;
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return Err(Error(format!(
+                    "unexpected or unsafe file: {}",
+                    path.display()
+                )));
+            }
+            if is_canonical_filename(&path) && !expected.contains(&path) {
+                stale.push(path);
+            }
+        }
+    }
+    Ok(stale)
+}
+
+fn is_canonical_filename(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(stem) = name.strip_suffix(".yaml") else {
+        return false;
+    };
+    (!stem.is_empty()
+        && stem.len() <= 200
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
+        || stem.strip_prefix("id.").is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
 }
 
 /// Validate and merge an export into the database. Missing files never delete records.
@@ -241,20 +296,17 @@ pub fn push(db: &Pool, directory: &Path, pages: bool, dry_run: bool) -> Result<C
         }
         // Duplicate IDs are rejected within a kind by read_group; IDs may intentionally overlap across kinds.
     }
-    const ROLLBACK: &str = "__baddiecore_dry_run__";
-    let result = database_transaction(db, move |tx| {
+    let mode = if dry_run {
+        TransactionMode::Rollback
+    } else {
+        TransactionMode::Commit
+    };
+    database_transaction(db, mode, move |tx| {
         merge(tx, components, templates, drafts)?;
-        if dry_run {
-            Err(ApiError::bad(ROLLBACK))
-        } else {
-            Ok(())
-        }
-    });
-    match result {
-        Ok(()) => Ok(counts),
-        Err(e) if dry_run && e.1 == ROLLBACK => Ok(counts),
-        Err(e) => Err(api_error(e)),
-    }
+        Ok(())
+    })
+    .map_err(api_error)?;
+    Ok(counts)
 }
 
 fn merge(
@@ -321,8 +373,10 @@ fn merge(
             None => insert_page(tx, page)?,
         }
     }
-    for page in crate::load_all::<Page>(tx, "pages")? {
-        validate_page(tx, &page)?;
+    let pages = crate::load_all::<Page>(tx, "pages")?;
+    let definitions = Definitions::load(tx, &pages)?;
+    for page in &pages {
+        definitions.validate(page)?;
     }
     Ok(())
 }
@@ -338,14 +392,17 @@ fn read_group<T: DeserializeOwned + Serialize + HasId>(
     }
     reject_unsafe_directory(&dir)?;
     let mut paths: Vec<_> = fs::read_dir(&dir)
-        .map_err(io_error)?
-        .map(|e| e.map(|x| x.path()).map_err(io_error))
+        .map_err(|e| io_error("read directory", &dir, e))?
+        .map(|e| {
+            e.map(|x| x.path())
+                .map_err(|e| io_error("read directory entry", &dir, e))
+        })
         .collect::<Result<_, _>>()?;
     paths.sort();
     let mut result = Vec::new();
     let mut ids = HashSet::new();
     for path in paths {
-        let meta = fs::symlink_metadata(&path).map_err(io_error)?;
+        let meta = fs::symlink_metadata(&path).map_err(|e| io_error("inspect", &path, e))?;
         if meta.file_type().is_symlink()
             || !meta.is_file()
             || path.extension().and_then(|x| x.to_str()) != Some("yaml")
@@ -358,7 +415,7 @@ fn read_group<T: DeserializeOwned + Serialize + HasId>(
         if meta.len() > MAX_FILE_SIZE {
             return Err(Error(format!("file too large: {}", path.display())));
         }
-        let bytes = fs::read(&path).map_err(io_error)?;
+        let bytes = fs::read(&path).map_err(|e| io_error("read", &path, e))?;
         let value: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&bytes)
             .map_err(|_| Error(format!("malformed YAML: {}", path.display())))?;
         let file: File<T> = serde_yaml_ng::from_value(value.clone())
@@ -412,12 +469,12 @@ fn ensure_directory(path: &Path) -> Result<(), Error> {
     if fs::symlink_metadata(path).is_ok() {
         reject_unsafe_directory(path)
     } else {
-        fs::create_dir_all(path).map_err(io_error)
+        fs::create_dir_all(path).map_err(|e| io_error("create directory", path, e))
     }
 }
 fn reject_unsafe_directory(path: &Path) -> Result<(), Error> {
     reject_symlink_ancestors(path)?;
-    let meta = fs::symlink_metadata(path).map_err(io_error)?;
+    let meta = fs::symlink_metadata(path).map_err(|e| io_error("inspect", path, e))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         Err(Error(format!("not a safe directory: {}", path.display())))
     } else {
@@ -432,8 +489,8 @@ fn reject_symlink_ancestors(path: &Path) -> Result<(), Error> {
     }
     Ok(())
 }
-fn io_error(_: std::io::Error) -> Error {
-    Error("file operation failed".into())
+fn io_error(operation: &str, path: &Path, error: std::io::Error) -> Error {
+    Error(format!("{operation} {}: {error}", path.display()))
 }
 fn api_error(e: ApiError) -> Error {
     Error(e.1)
@@ -449,6 +506,37 @@ mod tests {
         assert!(!file_name("../ café").contains('/'));
         assert_ne!(file_name("a/b"), file_name("a_b"));
         assert!(file_name(&"é".repeat(255)).len() < 255);
+    }
+
+    #[test]
+    fn canonical_filename_shape_is_exact() {
+        let hashed = file_name("not/a/direct/id");
+        assert!(is_canonical_filename(Path::new("home.yaml")));
+        assert!(is_canonical_filename(Path::new(&hashed)));
+        assert!(!is_canonical_filename(Path::new("notes.txt")));
+        assert!(!is_canonical_filename(Path::new("not canonical.yaml")));
+        assert!(!is_canonical_filename(Path::new(
+            "id.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.yaml"
+        )));
+    }
+
+    #[test]
+    fn stale_detection_uses_names_without_parsing_and_preserves_unrelated_files() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("components");
+        fs::create_dir(&dir).unwrap();
+        let expected_path = dir.join("expected.yaml");
+        fs::write(&expected_path, "malformed: [").unwrap();
+        let stale_path = dir.join("deleted.yaml");
+        fs::write(&stale_path, "also not yaml: [").unwrap();
+        fs::write(dir.join("editor-notes.txt"), "keep me").unwrap();
+        fs::write(dir.join("not canonical.yaml"), "keep me too").unwrap();
+
+        let expected = HashSet::from([expected_path]);
+        assert_eq!(
+            stale_exports(root.path(), &["components"], &expected).unwrap(),
+            vec![stale_path]
+        );
     }
     #[test]
     fn deterministic_page_yaml() {

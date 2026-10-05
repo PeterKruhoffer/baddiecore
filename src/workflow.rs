@@ -224,8 +224,13 @@ pub struct Review {
 }
 
 pub(super) fn current_content(db: &mut impl Queryable, page: Page) -> Result<Content> {
-    let template = require_template(db, &page.template_id)?;
-    let mut components = components_for_page(db, &page)?;
+    let mut definitions = Definitions::load(db, std::slice::from_ref(&page))?;
+    definitions.validate(&page)?;
+    let template = definitions
+        .templates
+        .remove(&page.template_id)
+        .ok_or_else(ApiError::not_found)?;
+    let mut components: Vec<Component> = definitions.components.into_values().collect();
     components.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(Content {
         page,
@@ -244,7 +249,6 @@ pub(super) async fn submit(
         let page = require_page(db, &id)?;
         access.page(&page.slug)?;
         if page.revision != input.revision { return Err(ApiError::conflict("stale revision")); }
-        validate_page(db, &page)?;
         let review = Review { id: id.clone(), submission_id: Uuid::new_v4().to_string(), content: current_content(db, page)?, submitted_by: access.id, status: ReviewStatus::Submitted, feedback: String::new(), reviewed_by: None };
         db.exec_drop("INSERT INTO reviews(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)", (&id, json(&review)?)).map_err(db_error)?;
         Ok(Json(review))
@@ -285,7 +289,7 @@ pub(super) async fn decide(
                 ));
             }
             if input.approve {
-                publish(db, current.page)?;
+                publish(db, current)?;
                 review.status = ReviewStatus::Approved;
             } else {
                 if input.feedback.trim().is_empty() {

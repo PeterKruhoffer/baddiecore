@@ -194,21 +194,42 @@ fn configuration_fails_closed_and_password_needs_no_workos() {
 fn sessions_expire_and_are_bounded() {
     let now = Instant::now();
     let mut store = Store::default();
-    store.insert("expired".into(), (), now, SESSION_LIFETIME);
+    store
+        .insert("expired".into(), (), now, SESSION_LIFETIME, MAX_SESSIONS)
+        .unwrap();
     store.prune(now + SESSION_LIFETIME - Duration::from_secs(1));
     assert!(store.entries.contains_key("expired"));
     store.prune(now + SESSION_LIFETIME);
     assert!(store.entries.is_empty());
-    for index in 0..=MAX_SESSIONS {
-        store.insert(
-            index.to_string(),
-            (),
-            now + Duration::from_secs(index as u64),
-            SESSION_LIFETIME,
-        );
+    for index in 0..MAX_SESSIONS {
+        store
+            .insert(
+                index.to_string(),
+                (),
+                now + Duration::from_secs(index as u64),
+                SESSION_LIFETIME,
+                MAX_SESSIONS,
+            )
+            .unwrap();
     }
+    assert!(
+        store
+            .insert("overflow".into(), (), now, SESSION_LIFETIME, MAX_SESSIONS)
+            .is_err()
+    );
     assert_eq!(store.entries.len(), MAX_SESSIONS);
+    assert!(store.entries.contains_key("0"));
+    store
+        .insert(
+            "replacement".into(),
+            (),
+            now + SESSION_LIFETIME,
+            SESSION_LIFETIME,
+            MAX_SESSIONS,
+        )
+        .unwrap();
     assert!(!store.entries.contains_key("0"));
+    assert!(store.entries.contains_key("replacement"));
 }
 
 #[tokio::test]
@@ -485,4 +506,123 @@ async fn auth_routes_reject_cross_origin_mutations() {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
     }
+}
+
+#[test]
+fn origins_compare_scheme_host_and_effective_port_and_reject_malformed_headers() {
+    use crate::auth::OriginPolicy;
+    for secure in [false, true] {
+        let policy = OriginPolicy::new(None, secure).unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, "cms.example".parse().unwrap());
+        assert!(policy.check(&h).is_ok());
+        for (origin, allowed) in [
+            ("http://cms.example", !secure),
+            ("https://cms.example", secure),
+            ("https://CMS.EXAMPLE:443", secure),
+            ("http://cms.example:80", !secure),
+            ("https://cms.example:8443", false),
+            ("https://evil.example", false),
+            ("https://cms.example/path", false),
+            ("https://cms.example/path/..", false),
+            ("https://user@cms.example", false),
+            ("https://cms.example?query", false),
+            ("null", false),
+        ] {
+            h.insert(header::ORIGIN, origin.parse().unwrap());
+            assert_eq!(
+                policy.check(&h).is_ok(),
+                allowed,
+                "{origin}, secure={secure}"
+            );
+        }
+        h.insert(
+            header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert!(policy.check(&h).is_err());
+    }
+    let policy = OriginPolicy::new(Some("https://cms.example:8443"), true).unwrap();
+    let mut h = HeaderMap::new();
+    h.insert(header::HOST, "internal-proxy:3000".parse().unwrap());
+    h.insert(header::ORIGIN, "https://cms.example:8443".parse().unwrap());
+    assert!(policy.check(&h).is_ok());
+    h.insert(header::ORIGIN, "https://cms.example".parse().unwrap());
+    assert!(policy.check(&h).is_err());
+    assert!(OriginPolicy::new(Some("http://cms.example"), true).is_err());
+    assert!(OriginPolicy::new(Some("https://cms.example/path"), true).is_err());
+}
+
+#[tokio::test]
+async fn full_pending_store_preserves_a_login_that_can_still_complete() {
+    use crate::auth::{LOGIN_LIFETIME, MAX_PENDING_LOGINS};
+    let mock = mock().await;
+    let (login_cookie, params) = begin(&mock.auth).await;
+    for index in 1..MAX_PENDING_LOGINS {
+        mock.auth
+            .pending
+            .lock()
+            .unwrap()
+            .insert(
+                format!("other-{index}"),
+                "verifier".into(),
+                Instant::now(),
+                LOGIN_LIFETIME,
+                MAX_PENDING_LOGINS,
+            )
+            .unwrap();
+    }
+    let rejected = call(&mock.auth, "GET", "/api/login", None, Value::Null).await;
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(!rejected.headers().contains_key(header::SET_COOKIE));
+    let response = call(
+        &mock.auth,
+        "GET",
+        &format!("/api/auth/callback?state={}&code=valid", params["state"]),
+        Some(&login_cookie),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(response.headers()[header::LOCATION], "/admin");
+    assert!(
+        mock.auth
+            .authorize(&headers(&cookie(&response, "baddie_session")))
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        call(&mock.auth, "GET", "/api/login", None, Value::Null)
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+}
+
+#[tokio::test]
+async fn authorization_waiting_on_a_session_cannot_outlive_its_expiry() {
+    let auth = Auth::password("secret".into(), false).unwrap();
+    let response = call(
+        &auth,
+        "POST",
+        "/api/login",
+        None,
+        json!({"password":"secret"}),
+    )
+    .await;
+    let h = headers(&cookie(&response, "baddie_session"));
+    let session = auth.session(&h).unwrap();
+    let guard = session.lock().await;
+    let authorization = auth.authorize(&h);
+    tokio::pin!(authorization);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut authorization)
+            .await
+            .is_err()
+    );
+    auth.sessions
+        .lock()
+        .unwrap()
+        .prune(Instant::now() + SESSION_LIFETIME);
+    drop(guard);
+    assert_eq!(authorization.await.unwrap_err(), StatusCode::UNAUTHORIZED);
 }

@@ -9,7 +9,7 @@ axum-extra = { version = "0.10", features = ["cookie"] }
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["fs", "limit"] }
 uuid = { version = "1", features = ["v4"] }
 subtle = "2"
@@ -17,8 +17,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 base64 = "0.22"
 sha2 = "0.10"
 serde_yaml_ng = "0.10"
+tempfile = "3"
 
 [dev-dependencies]
 http-body-util = "0.1"
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

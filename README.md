@@ -34,6 +34,8 @@ Open `http://localhost:3000/admin`. Nothing is published initially. Open Home, e
 
 For an Internet-facing installation, put a TLS reverse proxy in front of the loopback-bound port, preserve the original Host header, set `BADDIE_SECURE_COOKIE=true`, and rate-limit `/api/login` at the proxy. Do not expose the admin login over plain HTTP. The default authentication is a single shared administrator password. WorkOS is optional, as described below. Sessions expire after 12 hours and all sessions end on server restart.
 
+Origin checks compare the scheme, host, and effective port. Set `BADDIE_ORIGIN=https://cms.example.com` to pin the browser-facing origin, especially if the proxy rewrites Host. Without it, the server uses the preserved Host header and requires HTTPS when secure cookies are enabled, HTTP otherwise. Forwarded headers do not override this policy. Both pending logins and active sessions are bounded at 128; new logins receive 429 when full instead of evicting other users. Keep the proxy's per-client login rate limit in place.
+
 ## Choose authentication
 
 `BADDIE_AUTH=password` is the default and requires a nonempty `BADDIE_ADMIN_PASSWORD`. It makes no WorkOS requests and needs no WorkOS account. Unknown methods or missing required configuration stop startup. There is no unauthenticated editor mode and no fallback between methods.
@@ -72,6 +74,8 @@ Implement `auth::AuthProvider` and pass `Arc::new(your_provider)` to `AppState::
 - `authorize(&HeaderMap)` returns an `Editor { id }` after validating identity. Use a stable provider ID, not email. Return 401 for absent or invalid credentials. The CMS resolves local membership inside each content transaction and returns 403 for unknown identities. CMS middleware puts the identity in request extensions and preserves its same-origin mutation checks. The optional `recovery_admin` trait method defaults to false; override it only for a trusted operator recovery mechanism, never based on an untrusted role or ID header.
 - `routes()` returns a state-bound Axum `Router` for login, logout and callbacks. Match the frontend contract in `CONTRACT.md`. Redirect-based providers can reuse the existing login UI through `GET /api/auth/config`.
 - Your provider owns session expiry, revocation, CSRF protection for its routes, and secure credential storage. If using proxy identity headers, block direct backend access and make the trusted proxy strip client-supplied identity headers before setting its own.
+
+CMS routes use `AuthProvider::origin_policy`, which defaults to `BADDIE_ORIGIN` and `BADDIE_SECURE_COOKIE`. Override it with `OriginPolicy::new` for configuration supplied in Rust. Built-in providers use the same policy for their own routes and CMS mutations.
 
 The built-in implementations live in `src/auth.rs` and `src/auth/workos.rs`. Auth tests use a local mock WorkOS endpoint and do not need credentials. A real staging-environment sign-in and sign-out should still be checked before enabling WorkOS in production.
 
@@ -113,6 +117,8 @@ cargo run -- push --pages                 # explicitly import pages too
 ```
 
 An optional directory follows `pull` or `push`. `pull` refuses differing existing files unless `--force` is supplied, whether the difference came from Git or the editor. Commit or stash local changes before forcing a pull. A forced pull also removes exported files for items no longer in the database, within the selected kinds. Without `--pages`, both commands leave page files and page content alone. Definition imports still validate existing pages.
+
+`pull --force` can replace malformed exports. Canonical export filenames in the selected directories belong to the export; unrelated regular files are preserved. All output is staged before replacement, and each file is replaced atomically. An interruption during replacement can still leave a mixture of old and new files; rerun pull before pushing that directory. Pull without `--pages` does not load page data.
 
 Each item has a versioned YAML file under `components/`, `templates/`, or `pages/`. Filenames use stable IDs, usually UUIDs; unusual IDs use a SHA-256 filename. Keep IDs and filenames unchanged when editing existing items. Output is deterministic, including sorted block field keys, and excludes revisions, publication metadata, snapshots, sessions, and credentials. Add the export directory to Git and review it normally. The CLI never commits or pushes to Git itself.
 
@@ -169,4 +175,4 @@ Add renderer names to the Rust `Renderer` enum, the frontend `RendererName` type
 
 Run one CMS replica because sessions are process-local. Back up MySQL with `mysqldump --single-transaction` or Railway's database backups. Test restores before relying on backups. Tables use InnoDB. Database transactions serialize validation and writes through a lock row, including during overlapping deployments. Schema migration tooling beyond initial table creation is not yet included.
 
-Current limits include no media library, rich-text editor, localization, review audit history, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked; database operations are serialized.
+Current limits include no media library, rich-text editor, localization, review audit history, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked. Admin and CLI operations are serialized; public content and health checks do not take the CMS lock. The server admits at most 16 database jobs at once and returns 503 when full.

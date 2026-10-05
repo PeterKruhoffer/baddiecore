@@ -209,6 +209,28 @@ async fn rejects_invalid_blocks_urls_and_stale_revisions() {
     page.blocks[0]
         .fields
         .insert("button_url".into(), "https://example.com/path".into());
+    // Sharing a cached definition must not skip validation of later instances.
+    let mut repeated = page.blocks[0].clone();
+    repeated.id = "second-hero".into();
+    repeated.fields.remove("title");
+    page.blocks.push(repeated);
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    page.blocks
+        .last_mut()
+        .unwrap()
+        .fields
+        .insert("title".into(), "Different second title".into());
     let saved: Page = read(
         call(
             &app.app,
@@ -221,6 +243,10 @@ async fn rejects_invalid_blocks_urls_and_stale_revisions() {
     )
     .await;
     assert_eq!(saved.revision, 2);
+    assert_eq!(
+        saved.blocks.last().unwrap().fields["title"],
+        "Different second title"
+    );
     let response = call(
         &app.app,
         "PUT",
@@ -799,25 +825,57 @@ fn failed_seed_rolls_back_all_inserts() {
 }
 
 #[tokio::test]
-async fn health_checks_database_access() {
+async fn public_reads_and_health_do_not_wait_for_editorial_transactions() {
     let app = setup().await;
+    let page = bootstrap(&app).await.pages.remove(0);
     assert_eq!(
-        call(&app.app, "GET", "/health", None, None::<&Value>)
-            .await
-            .status(),
+        call(
+            &app.app,
+            "POST",
+            &format!("/api/admin/pages/{}/publish", page.id),
+            Some(&app.cookie),
+            Some(&json!({"revision":page.revision}))
+        )
+        .await
+        .status(),
         StatusCode::OK
     );
     let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
-    pool.get_conn()
-        .unwrap()
-        .query_drop("DROP TABLE cms_lock")
+    let mut conn = pool.get_conn().unwrap();
+    let mut tx = conn.start_transaction(mysql::TxOpts::default()).unwrap();
+    tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
         .unwrap();
-    assert_eq!(
-        call(&app.app, "GET", "/health", None, None::<&Value>)
-            .await
-            .status(),
-        StatusCode::INTERNAL_SERVER_ERROR
+    // An uncommitted publication must not replace the public snapshot.
+    tx.query_drop("DELETE FROM snapshots").unwrap();
+    for path in ["/health", "/api/content?slug=/"] {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            call(&app.app, "GET", path, None, None::<&Value>),
+        )
+        .await
+        .expect("public read waited on the CMS lock");
+        assert_eq!(response.status(), StatusCode::OK);
+        if path.starts_with("/api/content") {
+            let content: Content = read(response).await;
+            assert_eq!(content.page.id, page.id);
+            assert_eq!(content.page.published_revision, Some(page.revision));
+        }
+    }
+    let editorial = call(
+        &app.app,
+        "GET",
+        "/api/admin/bootstrap",
+        Some(&app.cookie),
+        None::<&Value>,
     );
+    tokio::pin!(editorial);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut editorial)
+            .await
+            .is_err()
+    );
+    tx.rollback().unwrap();
+    assert_eq!(editorial.await.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1302,6 +1360,92 @@ async fn import_path_swaps_are_atomic_and_pull_requires_explicit_overwrites() {
     assert_eq!(imported_page.published_revision, None);
     assert!(imported.components.iter().any(|c| c.id == "git-component"));
     assert!(imported.templates.iter().any(|t| t.id == "git-template"));
+}
+
+#[tokio::test]
+async fn forced_pull_repairs_malformed_exports_and_definition_only_pull_ignores_pages() {
+    use baddiecore::serialization::pull;
+    let app = setup().await;
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    pull(&pool, dir.path(), false, false).unwrap();
+    let hero = dir.path().join("components/hero.yaml");
+    let original = std::fs::read(&hero).unwrap();
+    let obsolete = dir.path().join("components/deleted.yaml");
+    let notes = dir.path().join("components/notes.txt");
+    std::fs::write(&hero, "invalid: [").unwrap();
+    std::fs::write(&obsolete, "invalid too: [").unwrap();
+    std::fs::write(&notes, "keep this").unwrap();
+    assert!(pull(&pool, dir.path(), false, false).is_err());
+    assert_eq!(std::fs::read_to_string(&hero).unwrap(), "invalid: [");
+    pull(&pool, dir.path(), false, true).unwrap();
+    assert_eq!(std::fs::read(&hero).unwrap(), original);
+    assert!(!obsolete.exists());
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep this");
+    assert!(!dir.path().join("pages").exists());
+    // This would fail if the definition-only command still deserialized pages.
+    pool.get_conn()
+        .unwrap()
+        .query_drop("UPDATE pages SET data='not json'")
+        .unwrap();
+    pull(&pool, dir.path(), false, true).unwrap();
+    assert!(pull(&pool, dir.path(), true, true).is_err());
+}
+
+#[tokio::test]
+async fn cms_origin_policy_uses_the_builtin_providers_transport_configuration() {
+    let db = TestDatabase::new();
+    let dir = tempfile::tempdir().unwrap();
+    for secure in [false, true] {
+        let provider = baddiecore::auth::Auth::password("secret".into(), secure).unwrap();
+        let app = router(
+            AppState::open_with_auth(&db.url, std::sync::Arc::new(provider)).unwrap(),
+            dir.path(),
+        );
+        let login = call(
+            &app,
+            "POST",
+            "/api/login",
+            None,
+            Some(&json!({"password":"secret"})),
+        )
+        .await;
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        for (origin, allowed) in [
+            ("http://cms.example", !secure),
+            ("https://cms.example", secure),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/admin/pages/home/publish")
+                        .header(header::HOST, "cms.example")
+                        .header(header::ORIGIN, origin)
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"revision":1}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if allowed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                },
+                "{origin}, secure={secure}"
+            );
+        }
+    }
 }
 
 // Test-only provider: cookies contain stable IDs, never enabled by the server.
