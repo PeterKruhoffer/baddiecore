@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, sync::Arc};
 
-use baddiecore::{AppState, auth::Auth, router, serialization};
+use baddiecore::{AppState, auth::Auth, headless::ApiKeys, router, serialization};
 use mysql::{Opts, Pool};
 
 #[tokio::main]
@@ -33,10 +33,20 @@ async fn main() {
         eprintln!("authentication configuration failed: {e}");
         std::process::exit(2)
     });
-    let state = AppState::open_with_auth(&db, Arc::new(auth)).unwrap_or_else(|e| {
-        eprintln!("startup failed: {e}");
+    let headless = ApiKeys::new(
+        env::var("BADDIE_CONTENT_API_KEY").ok(),
+        env::var("BADDIE_COMPONENT_API_KEY").ok(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("headless configuration failed: {e}");
         std::process::exit(2)
     });
+    let state = AppState::open_with_auth(&db, Arc::new(auth))
+        .unwrap_or_else(|e| {
+            eprintln!("startup failed: {e}");
+            std::process::exit(2)
+        })
+        .with_headless_keys(headless);
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .unwrap_or_else(|e| {

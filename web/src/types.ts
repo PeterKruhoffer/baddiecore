@@ -5,7 +5,7 @@ export interface Field {
   kind: FieldKind;
   required: boolean;
 }
-export type RendererName = "hero" | "text" | "callout" | "cards";
+export type RendererName = "hero" | "text" | "callout" | "cards" | "external";
 export interface ComponentDef {
   id: string;
   name: string;

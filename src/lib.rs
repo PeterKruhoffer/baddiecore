@@ -22,6 +22,7 @@ use tower_http::{
 use uuid::Uuid;
 
 pub mod auth;
+pub mod headless;
 pub mod serialization;
 pub mod workflow;
 
@@ -54,6 +55,7 @@ pub enum Renderer {
     Text,
     Callout,
     Cards,
+    External,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Region {
@@ -112,6 +114,7 @@ pub struct AppState {
     auth: Arc<dyn auth::AuthProvider>,
     database_slots: Arc<Semaphore>,
     origin: auth::OriginPolicy,
+    headless: headless::ApiKeys,
 }
 
 #[derive(Debug)]
@@ -181,6 +184,7 @@ impl AppState {
             auth,
             database_slots: Arc::new(Semaphore::new(16)),
             origin,
+            headless: headless::ApiKeys::default(),
         };
         state
             .transaction(|db| workflow::initialize(db))
@@ -426,6 +430,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/content", get(content))
+        .nest("/api/headless", headless::routes(state.clone()))
         .nest("/api/admin", admin)
         .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
         .with_state(state.clone())
@@ -1122,6 +1127,7 @@ mod tests {
             auth: Arc::new(auth::Auth::password("test".into(), false).unwrap()),
             database_slots: Arc::new(Semaphore::new(1)),
             origin: auth::OriginPolicy::from_env(false).unwrap(),
+            headless: headless::ApiKeys::default(),
         };
         let (started, ready) = tokio::sync::oneshot::channel();
         let (finish, wait) = std::sync::mpsc::channel();

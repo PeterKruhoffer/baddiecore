@@ -5,7 +5,7 @@ Rust Axum server, MySQL 8.4 persistence, Solid 2 SPA. API JSON uses snake_case.
 ## Models
 
 - Field: `{name, label, kind: "text" | "textarea" | "url", required: boolean}`
-- Component: `{id, name, description, renderer: "hero" | "text" | "callout" | "cards", fields: Field[]}`
+- Component: `{id, name, description, renderer: "hero" | "text" | "callout" | "cards" | "external", fields: Field[]}`. External components render in the consuming app by component ID; the CMS displays a labelled field-value preview and executes no external code.
 - Region: `{name, allowed_components: string[], max_components: number}`. Maximum is positive. An empty allowed list permits no components.
 - Template: `{id, name, description, regions: Region[]}`
 - Block: `{id, component_id, region, fields: Record<string,string>}`
@@ -46,6 +46,18 @@ Admin has all permissions. Reviewer can read/edit every draft and approve or req
 Server serves frontend dist with SPA fallback. Editor path `/admin`; other paths render public pages. Frontend Vite proxy `/api` and `/health` to port 3000. `BADDIE_BIND` overrides the listener; otherwise `PORT` binds `0.0.0.0:$PORT`, or `127.0.0.1:3000` if absent. `DATABASE_URL` is a required MySQL connection URL; `BADDIE_STATIC` defaults `web/dist`. Tables use InnoDB. Admin and CLI operations use a shared lock row to serialize authorization, validation and writes across connections. Public snapshot reads and health checks use ordinary connections without that lock and never read uncommitted changes. The server admits at most 16 database jobs per AppState, returning 503 when full. A cancelled request retains its slot until its blocking job finishes. Run one CMS replica because sessions remain process-local.
 
 Seed idempotently on a new database: hero with eyebrow/title/body/button_label/button_url, text with title/body, callout with title/body/button_label/button_url, cards with title/body. Required title; other fields optional. Homepage template with main region allowing all components, maximum 20. Home page draft with hero and text, suitable editorial starter copy. IDs are arbitrary strings, frontend must discover them.
+
+## Headless integration
+
+The server optionally accepts two independent installation-wide server-to-server keys, configured through `BADDIE_CONTENT_API_KEY` and `BADDIE_COMPONENT_API_KEY`. Missing or empty keys disable their capability. Nonempty keys require at least 32 non-whitespace ASCII bytes; configuring identical keys fails startup. Store SHA-256 digests in AppState and compare digests in constant time. Custom server hosts opt in with `AppState::with_headless_keys(headless::ApiKeys::new(...))`. Neither editor sessions nor these keys substitute for one another. Keys grant no admin access, local membership, page mutations, or publication permissions. Rotation/revocation requires changing server configuration and restarting.
+
+All `/api/headless` routes require exactly one `Authorization: Bearer <key>` header. No URL/query key authentication. Missing, malformed, wrong, or disabled keys return 401 with `{error: string}` and `WWW-Authenticate: Bearer`. Responses use `Cache-Control: no-store`. Bearer authentication does not use cookie same-origin checks. No cross-origin browser integration or client-side key storage is supported. Use HTTPS server-side requests and rate-limit at the reverse proxy. The existing public `/api/content` and public site remain available without keys; published content is not confidential.
+
+- `GET /api/headless/pages` and its HEAD use the content key. Returns `[{id, title, slug, template_id, revision}]` from published snapshots, ordered by published slug. Revision is the published page revision. Includes no unpublished drafts or current draft metadata. Reads without the CMS write lock.
+- `GET /api/headless/content?slug=/about` and its HEAD use the content key. Same snapshot contract and validation as `/api/content`. Returns `{page, template, components}` or 404 for unpublished. Consumers render `template.regions` in order, preserving block order within each region and resolving definitions by `component_id`.
+- `PUT /api/headless/components/{id}` uses only the component key, accepts full Component with matching ID and `renderer:"external"`. IDs use 1–200 ASCII letters, numbers, underscores or hyphens. Creates with 201, or updates an existing external component with 200. Returns Component. Repeated registration retains identity. Cannot replace built-in/CMS-rendered definitions, returning 409. Validates field schema and all affected drafts under the shared database lock; invalid updates roll back. Does not mutate template allowlists, page blocks, published snapshots or reviews. Administrators explicitly allow registered components in template regions before editors can place them. Registration keys can update any external definition, not just those created by the calling app.
+
+Custom components use the existing string field kinds and required flags. No remote renderer scripts, HTML templates, SDK, draft-preview route or publication webhooks. Schema imports/exports include the external renderer through the existing component contract.
 
 ## Local serialization
 

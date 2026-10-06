@@ -130,6 +130,27 @@ export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
       </div>
     </section>
   ),
+  external: (p) => (
+    <section {...stylex.attrs(styles.render, styles.cards)}>
+      <p {...stylex.attrs(common.eyebrow)}>External component · {p.definition.id}</p>
+      <h2 {...stylex.attrs(styles.heading, styles.h2)}>{p.definition.name}</h2>
+      <p {...stylex.attrs(styles.paragraph)}>
+        Content preview. The connected app controls this component's appearance.
+      </p>
+      <dl>
+        <For each={p.definition.fields}>
+          {(field) => (
+            <>
+              <dt>
+                <strong>{field.label}</strong>
+              </dt>
+              <dd {...stylex.attrs(styles.paragraph)}>{p.block.fields[field.name] || "Not set"}</dd>
+            </>
+          )}
+        </For>
+      </dl>
+    </section>
+  ),
 };
 export function BlockRenderer(p: Props) {
   return <>{renderers[p.definition.renderer](p)}</>;

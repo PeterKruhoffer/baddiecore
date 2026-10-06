@@ -74,10 +74,16 @@ async fn spa_routes_serve_html_with_success_status() {
 }
 
 async fn setup() -> TestApp {
+    setup_with_keys(baddiecore::headless::ApiKeys::default()).await
+}
+
+async fn setup_with_keys(keys: baddiecore::headless::ApiKeys) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let db = TestDatabase::new();
     let app = router(
-        AppState::open(&db.url, "secret".into(), false).unwrap(),
+        AppState::open(&db.url, "secret".into(), false)
+            .unwrap()
+            .with_headless_keys(keys),
         dir.path(),
     );
     let response = call(
@@ -133,6 +139,46 @@ async fn call(
 
 async fn read<T: DeserializeOwned>(response: axum::response::Response) -> T {
     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+const CONTENT_KEY: &str = "test-content-key-0123456789abcdef";
+const COMPONENT_KEY: &str = "test-component-key-9876543210abcd";
+
+async fn headless_setup() -> TestApp {
+    setup_with_keys(
+        baddiecore::headless::ApiKeys::new(Some(CONTENT_KEY.into()), Some(COMPONENT_KEY.into()))
+            .unwrap(),
+    )
+    .await
+}
+
+async fn key_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    key: &str,
+    body: Option<&Value>,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, "application/json");
+    if uri.starts_with("/api/headless/") {
+        // Cookie CSRF policy must not block server-to-server key authentication.
+        request = request.header(header::ORIGIN, "https://consumer.example");
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(
+                    body.map(|v| Body::from(serde_json::to_vec(v).unwrap()))
+                        .unwrap_or_else(Body::empty),
+                )
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
 
 async fn bootstrap(app: &TestApp) -> Bootstrap {
@@ -1996,4 +2042,362 @@ async fn membership_rejects_orphaned_groups_and_last_admin_removal_atomically() 
         .await;
         assert_eq!(current, org);
     }
+}
+
+#[tokio::test]
+async fn headless_keys_are_disabled_by_default_and_cannot_cross_capabilities() {
+    let disabled = setup().await;
+    assert_eq!(
+        key_call(
+            &disabled.app,
+            "GET",
+            "/api/headless/pages",
+            CONTENT_KEY,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let app = headless_setup().await;
+    for uri in ["/api/headless/pages", "/api/headless/content?slug=/"] {
+        for cookie in [None, Some(app.cookie.as_str())] {
+            let response = call(&app.app, "GET", uri, cookie, None::<&Value>).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+        }
+        for key in [COMPONENT_KEY, "wrong", "test-content-key-0123456789abcdee"] {
+            assert_eq!(
+                key_call(&app.app, "GET", uri, key, None).await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    assert_eq!(
+        key_call(&app.app, "HEAD", "/api/headless/pages", CONTENT_KEY, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        key_call(
+            &app.app,
+            "PUT",
+            "/api/headless/components/app-promo",
+            CONTENT_KEY,
+            Some(&json!({}))
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for key in [CONTENT_KEY, COMPONENT_KEY] {
+        assert_eq!(
+            key_call(&app.app, "GET", "/api/admin/bootstrap", key, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            key_call(
+                &app.app,
+                "POST",
+                "/api/admin/pages/home/publish",
+                key,
+                Some(&json!({"revision":1}))
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let response = app
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/headless/pages")
+                .header(header::AUTHORIZATION, format!("Bearer {CONTENT_KEY}"))
+                .header(header::AUTHORIZATION, format!("Bearer {CONTENT_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            &format!("/api/headless/pages?api_key={CONTENT_KEY}"),
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn headless_external_components_are_editor_definitions_and_delivery_is_snapshot_only() {
+    let app = headless_setup().await;
+    let uri = "/api/headless/components/app-promo";
+    let mut component = json!({"id":"app-promo", "name":"Product promotion", "description":"Rendered by the shop",
+    "renderer":"external", "fields":[
+        {"name":"headline", "label":"Headline", "kind":"text", "required":true},
+        {"name":"destination", "label":"Destination", "kind":"url", "required":false}
+    ]});
+    let response = key_call(&app.app, "PUT", uri, COMPONENT_KEY, Some(&component)).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(read::<Value>(response).await, component);
+    assert_eq!(
+        key_call(&app.app, "PUT", uri, COMPONENT_KEY, Some(&component))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let data = bootstrap(&app).await;
+    assert!(
+        data.components
+            .iter()
+            .any(|c| c.id == "app-promo" && c.renderer == baddiecore::Renderer::External)
+    );
+    let mut template = serde_json::to_value(&data.templates[0]).unwrap();
+    template["regions"][0]["allowed_components"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("app-promo"));
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/templates/homepage",
+            Some(&app.cookie),
+            Some(&template)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut page =
+        serde_json::to_value(data.pages.iter().find(|p| p.id == "home").unwrap()).unwrap();
+    page["blocks"].as_array_mut().unwrap().push(
+        json!({"id":"promo-instance", "component_id":"app-promo", "region":"main",
+        "fields":{"headline":"Summer offer", "destination":"/shop/summer"}}),
+    );
+    let page: Value = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await,
+    )
+    .await;
+    let empty: Value =
+        read(key_call(&app.app, "GET", "/api/headless/pages", CONTENT_KEY, None).await).await;
+    assert_eq!(empty, json!([]));
+    assert_eq!(
+        key_call(
+            &app.app,
+            "GET",
+            "/api/headless/content?slug=/",
+            CONTENT_KEY,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages/home/publish",
+            Some(&app.cookie),
+            Some(&json!({"revision":page["revision"]}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let response = key_call(
+        &app.app,
+        "GET",
+        "/api/headless/content?slug=/",
+        CONTENT_KEY,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let snapshot: Value = read(response).await;
+    assert_eq!(
+        snapshot["page"]["blocks"][2]["fields"]["headline"],
+        "Summer offer"
+    );
+    assert_eq!(
+        snapshot["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "app-promo")
+            .unwrap(),
+        &component
+    );
+    assert_eq!(snapshot["template"]["regions"][0]["name"], "main");
+
+    // Draft and schema updates must not leak private titles or field values.
+    let mut draft = page;
+    draft["title"] = json!("Private title");
+    draft["blocks"][2]["fields"]["headline"] = json!("Private offer");
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&draft)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages",
+            Some(&app.cookie),
+            Some(&json!({"title":"Hidden page", "slug":"/hidden", "template_id":"homepage"}))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    component["name"] = json!("Draft schema name");
+    assert_eq!(
+        key_call(&app.app, "PUT", uri, COMPONENT_KEY, Some(&component))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let unchanged: Value = read(
+        key_call(
+            &app.app,
+            "GET",
+            "/api/headless/content?slug=/",
+            CONTENT_KEY,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unchanged, snapshot);
+    let listing: Value =
+        read(key_call(&app.app, "GET", "/api/headless/pages", CONTENT_KEY, None).await).await;
+    assert_eq!(
+        listing,
+        json!([{"id":"home", "title":"Home", "slug":"/", "template_id":"homepage", "revision":2}])
+    );
+    assert_eq!(
+        key_call(
+            &app.app,
+            "GET",
+            "/api/headless/content?slug=/hidden",
+            CONTENT_KEY,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let mut invalid = component.clone();
+    invalid["fields"] = json!([]);
+    assert_eq!(
+        key_call(&app.app, "PUT", uri, COMPONENT_KEY, Some(&invalid))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let current = bootstrap(&app)
+        .await
+        .components
+        .into_iter()
+        .find(|c| c.id == "app-promo")
+        .unwrap();
+    assert_eq!(serde_json::to_value(current).unwrap(), component);
+}
+
+#[tokio::test]
+async fn headless_registration_validates_ids_schemas_and_protects_builtin_components() {
+    let app = headless_setup().await;
+    let valid = json!({"id":"app-card", "name":"Card", "description":"", "renderer":"external",
+        "fields":[{"name":"title", "label":"Title", "kind":"text", "required":true}]});
+    for (uri, input) in [
+        ("/api/headless/components/different", valid.clone()),
+        ("/api/headless/components/bad.id", {
+            let mut v = valid.clone();
+            v["id"] = json!("bad.id");
+            v
+        }),
+        ("/api/headless/components/app-card", {
+            let mut v = valid.clone();
+            v["name"] = json!("");
+            v
+        }),
+        ("/api/headless/components/app-card", {
+            let mut v = valid.clone();
+            v["renderer"] = json!("hero");
+            v
+        }),
+        ("/api/headless/components/app-card", {
+            let mut v = valid.clone();
+            v["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(valid["fields"][0].clone());
+            v
+        }),
+    ] {
+        assert_eq!(
+            key_call(&app.app, "PUT", uri, COMPONENT_KEY, Some(&input))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut collision = valid.clone();
+    collision["id"] = json!("hero");
+    assert_eq!(
+        key_call(
+            &app.app,
+            "PUT",
+            "/api/headless/components/hero",
+            COMPONENT_KEY,
+            Some(&collision)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(bootstrap(&app).await.components.len(), 4);
+    assert_eq!(
+        key_call(
+            &app.app,
+            "PUT",
+            "/api/headless/components/app-card",
+            COMPONENT_KEY,
+            Some(&valid)
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
 }

@@ -457,11 +457,17 @@ function ComponentFields(p: { value: ComponentDef; onChange: (v: ComponentDef) =
             })
           }
         >
-          <For each={["hero", "text", "callout", "cards"] as RendererName[]}>
+          <For each={["hero", "text", "callout", "cards", "external"] as RendererName[]}>
             {(r) => <option>{r}</option>}
           </For>
         </select>
       </label>
+      <Show when={p.value.renderer === "external"}>
+        <p {...stylex.attrs(styles.small)}>
+          The connected app renders component ID {p.value.id || "assigned on save"}. Editors see a
+          content preview here. Allow this component in a template region to use it on pages.
+        </p>
+      </Show>
       <fieldset {...stylex.attrs(styles.fieldset)}>
         <legend {...stylex.attrs(styles.legend)}>Fields</legend>
         <For each={p.value.fields.map((_, index) => index)}>
