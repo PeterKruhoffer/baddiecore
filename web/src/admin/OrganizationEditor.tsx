@@ -10,13 +10,21 @@ const styles = stylex.create({
   card: {
     padding: 20,
     marginBottom: 18,
-    backgroundColor: "#fffdf8",
+    backgroundColor: "#fff",
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: "#ddd6cb",
-    borderRadius: 12,
+    borderColor: "#dce2ea",
+    borderRadius: 4,
   },
   row: { display: "flex", gap: 12, flexWrap: "wrap" },
+  groups: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#dce2ea",
+    borderRadius: 4,
+    padding: 12,
+    marginBottom: 14,
+  },
 });
 const paths = (value: FormDataEntryValue | null) =>
   String(value || "")
@@ -110,7 +118,7 @@ export function OrganizationEditor(p: {
             value={member?.paths.join(", ") || ""}
           />
         </label>
-        <fieldset>
+        <fieldset {...stylex.attrs(styles.groups)}>
           <legend>Groups</legend>
           <For each={request.value()?.groups}>
             {(group) => (

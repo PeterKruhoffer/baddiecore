@@ -4,41 +4,64 @@ import type { ComponentDef, Field, FieldKind, Region, RendererName, Template } f
 import { common } from "../common.stylex";
 const styles = stylex.create({
   definition: {
-    padding: { default: "42px 48px", "@media (max-width: 720px)": "25px 16px" },
-    maxWidth: 1200,
-    margin: "auto",
+    padding: { default: "24px 28px", "@media (max-width: 720px)": "25px 16px" },
   },
   header: {
     display: "flex",
     justifyContent: "space-between",
-    marginBottom: 30,
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 16,
+    marginBottom: 24,
   },
-  heading: { font: "600 42px Georgia, serif", margin: 0 },
+  heading: { fontSize: 26, fontWeight: 650, margin: 0 },
   layout: {
     display: "grid",
     gridTemplateColumns: {
-      default: "240px 1fr",
-      "@media (max-width: 720px)": "1fr",
+      default: "minmax(0, 1fr) 300px",
+      "@media (max-width: 1100px)": "1fr",
     },
     gap: 20,
   },
-  list: { display: "grid", alignContent: "start", gap: 7 },
-  listButton: { textAlign: "left", display: "grid" },
-  active: { backgroundColor: "#eee9fa" },
-  small: { color: "#77716a" },
-  panel: {
-    backgroundColor: "#fffdf8",
+  preview: {
+    backgroundColor: "#fff",
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: "#ddd6cb",
-    borderRadius: 12,
+    borderColor: "#dce2ea",
+    borderRadius: 4,
+    padding: 20,
+    alignSelf: "start",
+  },
+  regionPreview: {
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#bfdbfe",
+    borderRadius: 4,
+    padding: 14,
+    margin: "14px 0",
+  },
+  previewType: {
+    display: "block",
+    backgroundColor: "#fff",
+    padding: 8,
+    marginTop: 6,
+    borderRadius: 4,
+  },
+  small: { color: "#64748b", fontSize: 12, lineHeight: 1.6 },
+  panel: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#dce2ea",
+    borderRadius: 4,
     padding: 24,
   },
   row: {
     display: "grid",
     gridTemplateColumns: {
       default: "1fr 1fr",
-      "@media (max-width: 720px)": "1fr",
+      "@media (max-width: 1200px)": "1fr",
     },
     gap: 12,
   },
@@ -52,11 +75,19 @@ const styles = stylex.create({
     borderWidth: 0,
     borderTopWidth: 1,
     borderTopStyle: "solid",
-    borderTopColor: "#ddd6cb",
+    borderTopColor: "#dce2ea",
     marginTop: 25,
   },
-  legend: { font: "600 19px Georgia, serif" },
-  rule: { backgroundColor: "#f5f1ea", borderRadius: 9, padding: 13, margin: 9 },
+  legend: { fontSize: 18, fontWeight: 650 },
+  rule: {
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#dce2ea",
+    borderRadius: 4,
+    padding: 16,
+    margin: "14px 0",
+  },
   checks: { display: "flex", flexWrap: "wrap", gap: "4px 16px" },
   check: { display: "flex", alignItems: "center", gap: 6 },
   autoWidth: { width: "auto" },
@@ -64,7 +95,7 @@ const styles = stylex.create({
     display: "grid",
     gridTemplateColumns: {
       default: "1fr 1fr 130px 90px auto",
-      "@media (max-width: 720px)": "1fr",
+      "@media (max-width: 1200px)": "1fr",
     },
     alignItems: "end",
     gap: 9,
@@ -75,7 +106,7 @@ type Props = {
   initialId?: string;
   templates: Template[];
   components: ComponentDef[];
-  onSave: (value: Template | ComponentDef, isNew: boolean) => Promise<void>;
+  onSave: (value: Template | ComponentDef, isNew: boolean) => Promise<Template | ComponentDef>;
   onDirty: (dirty: boolean) => void;
 };
 const blankTemplate = (): Template => ({
@@ -105,6 +136,7 @@ export function DefinitionEditor(p: Props) {
         : blankComponent(),
   );
   const [error, setError] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
   const list = () => (p.kind === "templates" ? p.templates : p.components);
   function markDirty(value: boolean) {
     setDirty(value);
@@ -131,14 +163,18 @@ export function DefinitionEditor(p: Props) {
   }
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    if (busy()) return;
+    setBusy(true);
     setError("");
     try {
-      await p.onSave(draft(), !selected());
-      setSelected("");
-      setDraft(p.kind === "templates" ? blankTemplate() : blankComponent());
+      const saved = await p.onSave(draft(), !selected());
+      setSelected(saved.id);
+      setDraft(structuredClone(saved));
       markDirty(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save");
+    } finally {
+      setBusy(false);
     }
   }
   return (
@@ -147,34 +183,36 @@ export function DefinitionEditor(p: Props) {
         <div>
           <p {...stylex.attrs(common.eyebrow)}>Site model</p>
           <h1 {...stylex.attrs(styles.heading)}>
-            {p.kind === "templates" ? "Templates" : "Components"}
+            {selected() ? draft().name : p.kind === "templates" ? "New template" : "New component"}
           </h1>
+          <p {...stylex.attrs(common.muted)}>
+            {p.kind === "templates"
+              ? "Define where components can go on a page."
+              : "Define a renderer and its content fields."}
+          </p>
         </div>
-        <button {...stylex.attrs(common.button)} onClick={() => choose("")}>
-          New {p.kind === "templates" ? "template" : "component"}
-        </button>
+        <div {...stylex.attrs(styles.checks)}>
+          <button
+            {...stylex.attrs(common.button)}
+            disabled={busy()}
+            onClick={() => choose(selected())}
+          >
+            Cancel changes
+          </button>
+          <button {...stylex.attrs(common.button)} disabled={busy()} onClick={() => choose("")}>
+            New {p.kind === "templates" ? "template" : "component"}
+          </button>
+          <button
+            {...stylex.attrs(common.button, common.primary)}
+            form="definition-form"
+            disabled={busy()}
+          >
+            {busy() ? "Saving…" : p.kind === "templates" ? "Save template" : "Save component"}
+          </button>
+        </div>
       </header>
       <div {...stylex.attrs(styles.layout)}>
-        <nav {...stylex.attrs(styles.list)}>
-          <For each={list()}>
-            {(item) => (
-              <button
-                {...stylex.attrs(
-                  common.button,
-                  styles.listButton,
-                  selected() === item.id && styles.active,
-                )}
-                onClick={() => choose(item.id)}
-              >
-                <strong>{item.name}</strong>
-                <small {...stylex.attrs(styles.small)}>
-                  {item.description || "No description"}
-                </small>
-              </button>
-            )}
-          </For>
-        </nav>
-        <form {...stylex.attrs(styles.panel)} onSubmit={submit}>
+        <form id="definition-form" {...stylex.attrs(styles.panel)} onSubmit={submit} inert={busy()}>
           <div {...stylex.attrs(styles.row)}>
             <label {...stylex.attrs(common.label)}>
               Name
@@ -212,11 +250,72 @@ export function DefinitionEditor(p: Props) {
             </p>
           )}
           <footer {...stylex.attrs(styles.footer)}>
+            <span {...stylex.attrs(styles.small)} role="status">
+              {busy()
+                ? "Saving…"
+                : dirty()
+                  ? "Unsaved changes"
+                  : selected()
+                    ? "Saved"
+                    : "New definition"}
+            </span>
             <button {...stylex.attrs(common.button, common.primary)}>
               Save {selected() ? "changes" : p.kind === "templates" ? "template" : "component"}
             </button>
           </footer>
         </form>
+        <aside
+          {...stylex.attrs(styles.preview)}
+          aria-label={p.kind === "templates" ? "Structure preview" : "Component summary"}
+        >
+          <Show
+            when={p.kind === "templates"}
+            fallback={
+              <>
+                <h3>Component fields</h3>
+                <p {...stylex.attrs(styles.small)}>
+                  Renderer: {(draft() as ComponentDef).renderer}
+                </p>
+                <For each={(draft() as ComponentDef).fields}>
+                  {(field) => (
+                    <p {...stylex.attrs(styles.previewType)}>
+                      {field.label || field.name} · {field.kind}
+                      {field.required ? " · Required" : ""}
+                    </p>
+                  )}
+                </For>
+                <p {...stylex.attrs(common.notice)}>
+                  Templates decide which regions allow this component.
+                </p>
+              </>
+            }
+          >
+            <h3>Structure preview</h3>
+            <p {...stylex.attrs(styles.small)}>
+              A region map, not the page design. These are allowed types, not default components.
+            </p>
+            <For each={(draft() as Template).regions}>
+              {(region) => (
+                <section {...stylex.attrs(styles.regionPreview)}>
+                  <strong>{region.name || "Unnamed region"}</strong>
+                  <p {...stylex.attrs(styles.small)}>Up to {region.max_components} components</p>
+                  <For each={p.components.filter((c) => region.allowed_components.includes(c.id))}>
+                    {(component) => (
+                      <span {...stylex.attrs(styles.previewType)}>{component.name}</span>
+                    )}
+                  </For>
+                  <Show when={!region.allowed_components.length}>
+                    <p {...stylex.attrs(styles.small)}>No components allowed</p>
+                  </Show>
+                </section>
+              )}
+            </For>
+            <div {...stylex.attrs(common.notice)}>
+              <strong>Fields live on components</strong>
+              <p>Edit component definitions to define their fields.</p>
+            </div>
+          </Show>
+        </aside>
       </div>
     </section>
   );
@@ -255,7 +354,7 @@ function TemplateRegions(p: {
                   />
                 </label>
                 <label {...stylex.attrs(common.label)}>
-                  Maximum
+                  Maximum components
                   <input
                     {...stylex.attrs(common.control)}
                     required
@@ -277,6 +376,7 @@ function TemplateRegions(p: {
                   />
                 </label>
               </div>
+              <p {...stylex.attrs(styles.small)}>Editors can add only the selected components.</p>
               <span {...stylex.attrs(common.label)}>Allowed components</span>
               <div {...stylex.attrs(styles.checks)}>
                 <For each={p.components}>
@@ -317,6 +417,9 @@ function TemplateRegions(p: {
           );
         }}
       </For>
+      <p {...stylex.attrs(common.notice)}>
+        An empty allowed-components list permits no components.
+      </p>
       <button
         {...stylex.attrs(common.button)}
         type="button"

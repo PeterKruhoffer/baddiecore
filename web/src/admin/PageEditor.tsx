@@ -6,17 +6,17 @@ import { common } from "../common.stylex";
 import { joinPath, pageParentPaths, parentPath, pathSegment } from "./pageTree";
 const styles = stylex.create({
   editor: {
-    height: { default: "100vh", "@media (max-width: 1050px)": "auto" },
-    minHeight: { default: null, "@media (max-width: 1050px)": "100vh" },
+    height: { default: "100%", "@media (max-width: 1050px)": "auto" },
+    minHeight: "100%",
     display: "flex",
     flexDirection: "column",
   },
   head: {
     minHeight: 83,
-    backgroundColor: "#fffdf8",
+    backgroundColor: "#fff",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: "#ddd6cb",
+    borderBottomColor: "#dce2ea",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -30,58 +30,80 @@ const styles = stylex.create({
     padding: 0,
     boxShadow: { default: "none", ":focus": "none" },
   },
-  title: { font: "600 24px Georgia, serif", width: 320 },
-  slug: { fontSize: 12, color: "#77716a", display: "block" },
+  title: { fontSize: 24, fontWeight: 650, width: "min(320px, 100%)" },
+  slug: { fontSize: 12, color: "#64748b", display: "block", overflowWrap: "anywhere" },
   actions: {
     display: "flex",
     gap: { default: 8, "@media (max-width: 720px)": 10 },
     alignItems: "center",
     flexWrap: { default: null, "@media (max-width: 1050px)": "wrap" },
   },
-  status: { fontSize: 11, color: "#77716a" },
   grid: {
     display: "grid",
     gridTemplateColumns: {
-      default: "210px minmax(0, 1fr) 260px",
-      "@media (max-width: 1050px)": "190px 1fr",
+      default: "minmax(320px, 0.85fr) minmax(0, 1.15fr)",
+      "@media (max-width: 1050px)": "minmax(280px, 1fr) minmax(0, 1fr)",
       "@media (max-width: 720px)": "1fr",
     },
     minHeight: 0,
     flex: 1,
   },
   side: {
-    backgroundColor: "#fffdf8",
-    padding: 17,
+    backgroundColor: "#f5f7fa",
+    padding: 20,
     borderRightWidth: 1,
     borderRightStyle: "solid",
-    borderRightColor: "#ddd6cb",
+    borderRightColor: "#dce2ea",
     overflow: { default: "auto", "@media (max-width: 1050px)": "visible" },
   },
-  inspector: {
-    borderLeftWidth: 1,
-    borderLeftStyle: "solid",
-    borderLeftColor: "#ddd6cb",
-    borderRightWidth: 0,
-    position: { default: null, "@media (max-width: 1050px)": "static" },
-    gridColumn: { default: null, "@media (max-width: 1050px)": "1 / -1" },
-    width: { default: null, "@media (max-width: 1050px)": "auto" },
-  },
-  sideHeading: { font: "600 17px Georgia, serif" },
+  sideHeading: { fontSize: 16, fontWeight: 650, margin: "0 0 12px" },
   region: {
     borderTopWidth: 1,
     borderTopStyle: "solid",
-    borderTopColor: "#ddd6cb",
+    borderTopColor: "#dce2ea",
     padding: "15px 0",
   },
   between: { display: "flex", justifyContent: "space-between" },
-  small: { color: "#77716a" },
-  blockRow: { display: "flex", margin: "5px 0" },
+  small: { color: "#64748b" },
+  blockRow: { display: "flex", backgroundColor: "#f8fafc", gap: 4 },
   blockMain: { flex: 1, textAlign: "left" },
-  selectedButton: { backgroundColor: "#eee9fa", borderColor: "#aa98da" },
+  selectedButton: { backgroundColor: "#eff6ff", color: "#1d4ed8", borderColor: "#2563eb" },
+  block: {
+    margin: "10px 0",
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#dce2ea",
+    borderRadius: 4,
+    overflow: "hidden",
+  },
+  selectedBlock: { borderColor: "#2563eb" },
+  fields: { padding: "4px 16px 14px" },
+  settings: { backgroundColor: "#fff", padding: 14, borderRadius: 4, marginBottom: 20 },
+  summary: { cursor: "pointer", fontWeight: 600 },
+  contentOnly: { gridTemplateColumns: "1fr" },
+  hidden: { display: "none" },
+  tabs: { display: "flex", gap: 6, backgroundColor: "#fff", padding: "8px 20px" },
+  footer: {
+    display: "flex",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 12,
+    padding: "12px 20px",
+    backgroundColor: "#fff",
+    fontSize: 12,
+    color: "#64748b",
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "#dce2ea",
+  },
+  metadata: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, margin: "24px 0" },
+  metadataValue: { margin: 0, overflowWrap: "anywhere" },
+  review: { marginTop: 16 },
   canvasWrap: {
     overflow: { default: "auto", "@media (max-width: 1050px)": "visible" },
-    backgroundColor: "#e8e3db",
-    padding: "0 25px 50px",
+    backgroundColor: "#f1f5f9",
+    padding: "0 20px 30px",
   },
   tools: {
     height: 48,
@@ -90,31 +112,25 @@ const styles = stylex.create({
     justifyContent: "space-between",
     fontSize: 12,
   },
-  activeTool: { backgroundColor: "#fffdf8" },
+  activeTool: { backgroundColor: "#eff6ff", color: "#1d4ed8", borderColor: "#2563eb" },
   canvas: {
     maxWidth: 920,
     minHeight: "calc(100% - 40px)",
     margin: "auto",
     backgroundColor: "#fff",
-    boxShadow: "0 5px 22px #372d2420",
+    boxShadow: "0 2px 10px #0f172a0d",
   },
   mobile: { maxWidth: 390 },
   preview: {
     outlineWidth: 2,
     outlineStyle: "solid",
     cursor: "pointer",
-    outlineColor: { default: "transparent", ":hover": "#6650a5" },
+    outlineColor: { default: "transparent", ":hover": "#2563eb" },
+    outlineOffset: -2,
   },
-  previewSelected: { outlineColor: "#6650a5" },
-  inspectorTitle: {
-    display: "flex",
-    justifyContent: "space-between",
-    padding: 11,
-    backgroundColor: "#f4f0e8",
-    borderRadius: 8,
-  },
-  pathHelp: { fontSize: 12, lineHeight: 1.45, color: "#77716a" },
-  pathPreview: { overflowWrap: "anywhere", color: "#6650a5" },
+  previewSelected: { outlineColor: "#2563eb" },
+  pathHelp: { fontSize: 12, lineHeight: 1.45, color: "#64748b" },
+  pathPreview: { overflowWrap: "anywhere", color: "#2563eb" },
 });
 type Props = {
   page: Page;
@@ -135,11 +151,15 @@ export function PageEditor(p: Props) {
   const [draft, setDraft] = createSignal(structuredClone(p.page));
   const [parent, setParent] = createSignal(parentPath(p.page.slug));
   const [segment, setSegment] = createSignal(pathSegment(p.page.slug));
-  const [selected, setSelected] = createSignal(p.initialBlockId);
+  const [selected, setSelected] = createSignal<string | undefined>(
+    p.initialBlockId ?? p.page.blocks[0]?.id,
+  );
+  const [experience, setExperience] = createSignal(true);
   const [mobile, setMobile] = createSignal(false);
   const [busy, setBusy] = createSignal("");
   const [error, setError] = createSignal("");
   const [dirty, setDirty] = createSignal(false);
+  let publishDialog!: HTMLDialogElement;
   let dragged: string | undefined;
   const template = () => p.templates.find((t) => t.id === draft().template_id);
   const isRoot = () => p.page.slug === "/";
@@ -211,6 +231,7 @@ export function PageEditor(p: Props) {
       setDirty(false);
       p.onDirty(false);
       setDraft(structuredClone(await (submit ? p.onSubmit(saved) : p.onPublish(saved))));
+      if (!submit) publishDialog.close();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -228,12 +249,19 @@ export function PageEditor(p: Props) {
       setBusy("");
     }
   }
-  const active = () => draft().blocks.find((b) => b.id === selected());
+  function changeField(id: string, name: string, value: string) {
+    update({
+      ...draft(),
+      blocks: draft().blocks.map((b) =>
+        b.id === id ? { ...b, fields: { ...b.fields, [name]: value } } : b,
+      ),
+    });
+  }
   return (
     <section {...stylex.attrs(styles.editor)}>
       <header {...stylex.attrs(styles.head)}>
         <div>
-          <p {...stylex.attrs(common.eyebrow)}>Page editor</p>
+          <p {...stylex.attrs(common.eyebrow)}>Site / Page editor</p>
           <input
             {...stylex.attrs(common.control, styles.bareInput, styles.title)}
             aria-label="Page title"
@@ -244,12 +272,13 @@ export function PageEditor(p: Props) {
           <code {...stylex.attrs(styles.slug)}>{draft().slug}</code>
         </div>
         <div {...stylex.attrs(styles.actions)}>
-          <span {...stylex.attrs(styles.status)}>
-            {dirty()
-              ? "Unsaved changes"
-              : draft().published_revision === draft().revision
-                ? "Published"
-                : "Draft changes"}
+          <span
+            {...stylex.attrs(
+              common.badge,
+              draft().published_revision === draft().revision && !dirty() && common.live,
+            )}
+          >
+            {draft().published_revision === draft().revision && !dirty() ? "Published" : "Draft"}
           </span>
           <button
             {...stylex.attrs(common.button)}
@@ -269,7 +298,10 @@ export function PageEditor(p: Props) {
             <button
               {...stylex.attrs(common.button, common.primary)}
               disabled={!!busy() || !validPath()}
-              onClick={() => void publish()}
+              onClick={() => {
+                setError("");
+                publishDialog.showModal();
+              }}
             >
               {busy() === "publish" ? "Publishing…" : "Publish"}
             </button>
@@ -284,90 +316,97 @@ export function PageEditor(p: Props) {
           </Show>
         </div>
       </header>
-      <Show when={p.review}>
-        {(review) => (
-          <p {...stylex.attrs(styles.slug)} role="status">
-            Review: {review().status.replaceAll("_", " ")} · Submitted revision{" "}
-            {review().content.page.revision}
-            {review().content.page.revision !== draft().revision
-              ? " · Draft changed; submit again"
-              : ""}
-            {review().feedback ? ` · Feedback: ${review().feedback}` : ""}
-          </p>
-        )}
-      </Show>
+      <div {...stylex.attrs(styles.tabs)} role="group" aria-label="Editing mode">
+        <button
+          {...stylex.attrs(common.button, !experience() && styles.activeTool)}
+          aria-pressed={!experience() ? "true" : "false"}
+          onClick={() => setExperience(false)}
+        >
+          Content
+        </button>
+        <button
+          {...stylex.attrs(common.button, experience() && styles.activeTool)}
+          aria-pressed={experience() ? "true" : "false"}
+          onClick={() => setExperience(true)}
+        >
+          Experience
+        </button>
+      </div>
       {error() && (
         <p {...stylex.attrs(common.error)} role="alert">
           {error()}
         </p>
       )}
-      <div {...stylex.attrs(styles.grid)} inert={!!busy()}>
+      <div {...stylex.attrs(styles.grid, !experience() && styles.contentOnly)} inert={!!busy()}>
         <aside {...stylex.attrs(styles.side)}>
-          <h3 {...stylex.attrs(styles.sideHeading)}>Page structure</h3>
-          <label {...stylex.attrs(common.label)}>
-            Template
-            <select
-              {...stylex.attrs(common.control)}
-              value={draft().template_id}
-              onChange={(e) => update({ ...draft(), template_id: e.currentTarget.value })}
-            >
-              <For each={p.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
-            </select>
-          </label>
-          <h3 {...stylex.attrs(styles.sideHeading)}>URL</h3>
-          <Show
-            when={!isRoot()}
-            fallback={
-              <p {...stylex.attrs(styles.pathHelp)}>
-                The root page stays at <code>/</code> and cannot be moved or renamed.
-              </p>
-            }
-          >
+          <details {...stylex.attrs(styles.settings)}>
+            <summary {...stylex.attrs(styles.summary)}>Page details · {template()?.name}</summary>
             <label {...stylex.attrs(common.label)}>
-              Parent
+              Template
               <select
                 {...stylex.attrs(common.control)}
-                value={parent()}
-                onChange={(e) => {
-                  setParent(e.currentTarget.value);
-                  update({
-                    ...draft(),
-                    slug: joinPath(e.currentTarget.value, segment()),
-                  });
-                }}
+                value={draft().template_id}
+                onChange={(e) => update({ ...draft(), template_id: e.currentTarget.value })}
               >
-                <For each={availableParents()}>
-                  {(path) => <option value={path}>{path}</option>}
-                </For>
+                <For each={p.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
               </select>
             </label>
-            <label {...stylex.attrs(common.label)}>
-              URL segment
-              <input
-                {...stylex.attrs(common.control)}
-                required
-                pattern="[A-Za-z0-9_\-]+"
-                value={segment()}
-                onInput={(e) => {
-                  setSegment(e.currentTarget.value);
-                  update({
-                    ...draft(),
-                    slug: joinPath(parent(), e.currentTarget.value),
-                  });
-                }}
-              />
-            </label>
-            <p {...stylex.attrs(styles.pathHelp)}>
-              Path preview: <code {...stylex.attrs(styles.pathPreview)}>{draft().slug}</code>
-            </p>
-            <Show when={!validPath()}>
-              <p {...stylex.attrs(common.error)}>Use letters, numbers, hyphens or underscores.</p>
+            <h3 {...stylex.attrs(styles.sideHeading)}>URL</h3>
+            <Show
+              when={!isRoot()}
+              fallback={
+                <p {...stylex.attrs(styles.pathHelp)}>
+                  The root page stays at <code>/</code> and cannot be moved or renamed.
+                </p>
+              }
+            >
+              <label {...stylex.attrs(common.label)}>
+                Parent
+                <select
+                  {...stylex.attrs(common.control)}
+                  value={parent()}
+                  onChange={(e) => {
+                    setParent(e.currentTarget.value);
+                    update({
+                      ...draft(),
+                      slug: joinPath(e.currentTarget.value, segment()),
+                    });
+                  }}
+                >
+                  <For each={availableParents()}>
+                    {(path) => <option value={path}>{path}</option>}
+                  </For>
+                </select>
+              </label>
+              <label {...stylex.attrs(common.label)}>
+                URL segment
+                <input
+                  {...stylex.attrs(common.control)}
+                  required
+                  pattern="[A-Za-z0-9_\-]+"
+                  value={segment()}
+                  onInput={(e) => {
+                    setSegment(e.currentTarget.value);
+                    update({
+                      ...draft(),
+                      slug: joinPath(parent(), e.currentTarget.value),
+                    });
+                  }}
+                />
+              </label>
+              <p {...stylex.attrs(styles.pathHelp)}>
+                Path preview: <code {...stylex.attrs(styles.pathPreview)}>{draft().slug}</code>
+              </p>
+              <Show when={!validPath()}>
+                <p {...stylex.attrs(common.error)}>Use letters, numbers, hyphens or underscores.</p>
+              </Show>
+              <p {...stylex.attrs(styles.pathHelp)}>
+                Saving a move or rename also moves every descendant draft URL. Published pages keep
+                their current URLs until each changed page is published again.
+              </p>
             </Show>
-            <p {...stylex.attrs(styles.pathHelp)}>
-              Saving a move or rename also moves every descendant draft URL. Published pages keep
-              their current URLs until each changed page is published again.
-            </p>
-          </Show>
+          </details>
+          <h3 {...stylex.attrs(styles.sideHeading)}>Page structure</h3>
           <For each={template()?.regions}>
             {(region) => (
               <div {...stylex.attrs(styles.region)}>
@@ -377,50 +416,94 @@ export function PageEditor(p: Props) {
                     {blocks(region.name).length}/{region.max_components}
                   </small>
                 </div>
-                <For each={blocks(region.name)}>
-                  {(block) => {
-                    const def = p.components.find((c) => c.id === block.component_id)!;
+                <For each={blocks(region.name).map((b) => b.id)}>
+                  {(id) => {
+                    const block = () => draft().blocks.find((b) => b.id === id)!;
+                    const def = p.components.find((c) => c.id === block().component_id)!;
                     return (
-                      <div {...stylex.attrs(styles.blockRow)}>
-                        <button
-                          {...stylex.attrs(
-                            common.button,
-                            styles.blockMain,
-                            selected() === block.id && styles.selectedButton,
-                          )}
-                          draggable="true"
-                          onDragStart={() => (dragged = block.id)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => {
-                            if (dragged && dragged !== block.id) {
-                              const from = draft().blocks.findIndex((b) => b.id === dragged),
-                                to = draft().blocks.findIndex((b) => b.id === block.id),
-                                copy = [...draft().blocks];
-                              copy.splice(to, 0, ...copy.splice(from, 1));
-                              update({ ...draft(), blocks: copy });
-                            }
-                          }}
-                          onClick={() => setSelected(block.id)}
-                        >
-                          <span>⠿</span>
-                          {def?.name}
-                        </button>
-                        <button
-                          {...stylex.attrs(common.button)}
-                          type="button"
-                          onClick={() => move(block.id, -1)}
-                          aria-label={`Move ${def?.name} up`}
-                        >
-                          ↑
-                        </button>
-                        <button
-                          {...stylex.attrs(common.button)}
-                          type="button"
-                          onClick={() => move(block.id, 1)}
-                          aria-label={`Move ${def?.name} down`}
-                        >
-                          ↓
-                        </button>
+                      <div
+                        {...stylex.attrs(styles.block, selected() === id && styles.selectedBlock)}
+                      >
+                        <div {...stylex.attrs(styles.blockRow)}>
+                          <button
+                            {...stylex.attrs(
+                              common.button,
+                              styles.blockMain,
+                              selected() === id && styles.selectedButton,
+                            )}
+                            draggable="true"
+                            onDragStart={() => (dragged = id)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => {
+                              if (dragged && dragged !== id) {
+                                const from = draft().blocks.findIndex((b) => b.id === dragged),
+                                  to = draft().blocks.findIndex((b) => b.id === id),
+                                  copy = [...draft().blocks];
+                                copy.splice(to, 0, ...copy.splice(from, 1));
+                                update({ ...draft(), blocks: copy });
+                              }
+                            }}
+                            aria-expanded={selected() === id ? "true" : "false"}
+                            onClick={() => setSelected(selected() === id ? undefined : id)}
+                          >
+                            <span>⠿</span>
+                            {def?.name}
+                          </button>
+                          <button
+                            {...stylex.attrs(common.button)}
+                            type="button"
+                            onClick={() => move(id, -1)}
+                            aria-label={`Move ${def?.name} up`}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            {...stylex.attrs(common.button)}
+                            type="button"
+                            onClick={() => move(id, 1)}
+                            aria-label={`Move ${def?.name} down`}
+                          >
+                            ↓
+                          </button>
+                        </div>
+                        <Show when={selected() === id}>
+                          <div {...stylex.attrs(styles.fields)}>
+                            <For each={def?.fields}>
+                              {(field) => (
+                                <label {...stylex.attrs(common.label)}>
+                                  {field.label}
+                                  {field.required ? " *" : ""}
+                                  {field.kind === "textarea" ? (
+                                    <textarea
+                                      {...stylex.attrs(common.control, common.textarea)}
+                                      required={field.required}
+                                      value={block().fields[field.name] || ""}
+                                      onInput={(e) =>
+                                        changeField(id, field.name, e.currentTarget.value)
+                                      }
+                                    />
+                                  ) : (
+                                    <input
+                                      {...stylex.attrs(common.control)}
+                                      type="text"
+                                      required={field.required}
+                                      value={block().fields[field.name] || ""}
+                                      onInput={(e) =>
+                                        changeField(id, field.name, e.currentTarget.value)
+                                      }
+                                    />
+                                  )}
+                                </label>
+                              )}
+                            </For>
+                            <button
+                              {...stylex.attrs(common.button, common.danger)}
+                              onClick={() => remove(id)}
+                            >
+                              Remove component
+                            </button>
+                          </div>
+                        </Show>
                       </div>
                     );
                   }}
@@ -434,7 +517,7 @@ export function PageEditor(p: Props) {
                     e.currentTarget.value = "";
                   }}
                 >
-                  <option value="">+ Add block</option>
+                  <option value="">+ Add component</option>
                   <For each={p.components.filter((c) => region.allowed_components.includes(c.id))}>
                     {(c) => <option value={c.id}>{c.name}</option>}
                   </For>
@@ -442,19 +525,48 @@ export function PageEditor(p: Props) {
               </div>
             )}
           </For>
+          <Show when={p.review}>
+            {(review) => (
+              <div
+                {...stylex.attrs(
+                  common.notice,
+                  review().status === "changes_requested" && common.warning,
+                  styles.review,
+                )}
+                role="status"
+              >
+                <strong>
+                  {review().status === "submitted"
+                    ? "In review"
+                    : review().status === "approved"
+                      ? "Approved and published"
+                      : "Changes requested"}
+                </strong>
+                <p>Submitted revision {review().content.page.revision}</p>
+                <Show when={review().feedback}>
+                  <p>{review().feedback}</p>
+                </Show>
+                <Show when={dirty() || review().content.page.revision !== draft().revision}>
+                  <p>Draft changed. Save your changes, then submit again for review.</p>
+                </Show>
+              </div>
+            )}
+          </Show>
         </aside>
-        <main {...stylex.attrs(styles.canvasWrap)}>
+        <main {...stylex.attrs(styles.canvasWrap, !experience() && styles.hidden)}>
           <div {...stylex.attrs(styles.tools)}>
             <span>Live preview</span>
             <div>
               <button
                 {...stylex.attrs(common.button, !mobile() && styles.activeTool)}
+                aria-pressed={!mobile() ? "true" : "false"}
                 onClick={() => setMobile(false)}
               >
                 Desktop
               </button>
               <button
                 {...stylex.attrs(common.button, mobile() && styles.activeTool)}
+                aria-pressed={mobile() ? "true" : "false"}
                 onClick={() => setMobile(true)}
               >
                 Mobile
@@ -496,91 +608,77 @@ export function PageEditor(p: Props) {
             </Show>
           </div>
         </main>
-        <aside {...stylex.attrs(styles.side, styles.inspector)}>
-          <h3 {...stylex.attrs(styles.sideHeading)}>Properties</h3>
-          <Show
-            when={active()}
-            fallback={
-              <p {...stylex.attrs(common.muted)}>
-                Select a component on the canvas to edit its content.
-              </p>
-            }
-          >
-            {(block) => {
-              const def = () => p.components.find((c) => c.id === block()?.component_id)!;
-              return (
-                <>
-                  <div {...stylex.attrs(styles.inspectorTitle)}>
-                    <div>
-                      <strong>{def().name}</strong>{" "}
-                      <small {...stylex.attrs(styles.small)}>{block()?.region}</small>
-                    </div>
-                    <button
-                      {...stylex.attrs(common.button, common.danger)}
-                      onClick={() => block() && remove(block()!.id)}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  <For each={def().fields}>
-                    {(field) => (
-                      <label {...stylex.attrs(common.label)}>
-                        {field.label}
-                        {field.kind === "textarea" ? (
-                          <textarea
-                            {...stylex.attrs(common.control, common.textarea)}
-                            required={field.required}
-                            value={block()?.fields[field.name] || ""}
-                            onInput={(e) =>
-                              update({
-                                ...draft(),
-                                blocks: draft().blocks.map((b) =>
-                                  b.id === block()?.id
-                                    ? {
-                                        ...b,
-                                        fields: {
-                                          ...b.fields,
-                                          [field.name]: e.currentTarget.value,
-                                        },
-                                      }
-                                    : b,
-                                ),
-                              })
-                            }
-                          />
-                        ) : (
-                          <input
-                            {...stylex.attrs(common.control)}
-                            type={field.kind === "url" ? "url" : "text"}
-                            required={field.required}
-                            value={block()?.fields[field.name] || ""}
-                            onInput={(e) =>
-                              update({
-                                ...draft(),
-                                blocks: draft().blocks.map((b) =>
-                                  b.id === block()?.id
-                                    ? {
-                                        ...b,
-                                        fields: {
-                                          ...b.fields,
-                                          [field.name]: e.currentTarget.value,
-                                        },
-                                      }
-                                    : b,
-                                ),
-                              })
-                            }
-                          />
-                        )}
-                      </label>
-                    )}
-                  </For>
-                </>
-              );
-            }}
-          </Show>
-        </aside>
       </div>
+      <footer {...stylex.attrs(styles.footer)}>
+        <span role="status">
+          {busy()
+            ? "Working…"
+            : dirty()
+              ? "Unsaved changes"
+              : `Saved draft · Revision ${draft().revision}`}
+        </span>
+        <span>Draft changes are private until published.</span>
+      </footer>
+      <dialog
+        ref={(element) => {
+          publishDialog = element;
+        }}
+        {...stylex.attrs(common.dialog)}
+        aria-labelledby="publish-heading"
+        onCancel={(e) => {
+          if (busy()) e.preventDefault();
+        }}
+      >
+        <h2 id="publish-heading" {...stylex.attrs(common.heading)}>
+          Publish {draft().title}?
+        </h2>
+        <p {...stylex.attrs(common.muted)}>Publish this page immediately to your live site.</p>
+        <dl {...stylex.attrs(styles.metadata)}>
+          <dt>URL</dt>
+          <dd {...stylex.attrs(styles.metadataValue)}>{draft().slug}</dd>
+          <dt>Template</dt>
+          <dd {...stylex.attrs(styles.metadataValue)}>{template()?.name}</dd>
+          <dt>Saved draft revision</dt>
+          <dd {...stylex.attrs(styles.metadataValue)}>{draft().revision}</dd>
+          <dt>Currently live revision</dt>
+          <dd {...stylex.attrs(styles.metadataValue)}>
+            {draft().published_revision ?? "Not published"}
+          </dd>
+        </dl>
+        <Show when={dirty()}>
+          <p {...stylex.attrs(common.muted)}>
+            Unsaved changes will be saved as a new revision before publishing.
+          </p>
+        </Show>
+        <div {...stylex.attrs(common.notice)}>
+          <strong>This page only</strong>
+          <p>
+            {draft().title} at {draft().slug} will go live. Child pages will not be published.
+          </p>
+          <p>The page, template and component definitions are published together.</p>
+        </div>
+        <Show when={error()}>
+          <p {...stylex.attrs(common.error)} role="alert">
+            {error()}
+          </p>
+        </Show>
+        <div {...stylex.attrs(styles.actions, styles.review)}>
+          <button
+            {...stylex.attrs(common.button)}
+            disabled={!!busy()}
+            onClick={() => publishDialog.close()}
+          >
+            Cancel
+          </button>
+          <button
+            {...stylex.attrs(common.button, common.primary)}
+            disabled={!!busy()}
+            onClick={() => void publish()}
+          >
+            {busy() === "publish" ? "Publishing…" : dirty() ? "Save and publish" : "Publish page"}
+          </button>
+        </div>
+      </dialog>
     </section>
   );
 }

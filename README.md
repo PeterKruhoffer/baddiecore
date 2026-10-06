@@ -163,6 +163,15 @@ pnpm --dir web run typecheck
 pnpm --dir web run build
 ```
 
+The browser tests use mock API responses and need no database. Install Chromium once, then run:
+
+```sh
+pnpm --dir web exec playwright install chromium
+pnpm --dir web run test:ui
+```
+
+Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium executable instead. The tests start the frontend dev server automatically and cover editing, publishing, reviews, template creation, permissions, and narrow-screen navigation. They do not replace the MySQL API tests.
+
 Each API test creates a uniquely named `baddie_test_*` database and drops it afterward. Tests fail rather than silently skip when `TEST_DATABASE_URL` is missing. Do not point tests at production.
 
 Configuration: `DATABASE_URL` and the selected authentication method's configuration are required. `BADDIE_BIND` overrides the listener; otherwise `PORT` selects `0.0.0.0:$PORT`, falling back to `127.0.0.1:3000` when absent. `BADDIE_STATIC` defaults to `web/dist`, and `BADDIE_SECURE_COOKIE` to false. The Docker image sets `PORT=3000` and `BADDIE_STATIC=/app/web`. `BADDIE_DB` is no longer used. `/health` checks database access. See [CONTRACT.md](CONTRACT.md) for the JSON API.

@@ -24,15 +24,40 @@ const styles = stylex.create({
       default: "250px 1fr",
       "@media (max-width: 1050px)": "210px 1fr",
     },
+    gridTemplateRows: "60px minmax(0, 1fr)",
     height: "100vh",
   },
+  topbar: {
+    gridColumn: "1 / -1",
+    backgroundColor: "#282d35",
+    color: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "14px 22px",
+    gap: 16,
+  },
+  role: {
+    color: "#dce2ea",
+    fontSize: 13,
+    textTransform: "capitalize",
+    display: { default: "block", "@media (max-width: 720px)": "none" },
+  },
+  navigationToggle: {
+    display: { default: "none", "@media (max-width: 720px)": "block" },
+    color: "#182235",
+  },
+  navigationClosed: { display: { default: "flex", "@media (max-width: 720px)": "none" } },
   sidebar: {
-    backgroundColor: "#282521",
-    color: "#f7f1e8",
-    padding: "21px 14px",
+    backgroundColor: "#fff",
+    color: "#182235",
+    padding: "22px 14px",
     display: "flex",
     flexDirection: "column",
     overflowY: "auto",
+    borderRightWidth: 1,
+    borderRightStyle: "solid",
+    borderRightColor: "#dce2ea",
     height: { default: null, "@media (max-width: 720px)": "auto" },
   },
   brand: {
@@ -41,33 +66,32 @@ const styles = stylex.create({
     alignItems: "center",
     color: "inherit",
     textDecoration: "none",
-    padding: "0 7px 27px",
+    padding: 0,
     fontWeight: 600,
   },
-  brandSmall: { display: "block", fontSize: 10, color: "#77716a" },
   navButton: {
     width: "100%",
     borderWidth: 0,
-    backgroundColor: { default: "transparent", ":hover": "#3a3530" },
-    color: { default: "#c9c2b9", ":hover": "#fff" },
+    backgroundColor: { default: "transparent", ":hover": "#f1f5f9" },
+    color: { default: "#334155", ":hover": "#1d4ed8" },
     textAlign: "left",
     display: "flex",
     justifyContent: "space-between",
   },
-  active: { backgroundColor: "#3a3530", color: "#fff" },
+  active: { backgroundColor: "#eff6ff", color: "#1d4ed8" },
   sidebarFoot: {
     marginTop: "auto",
     display: "grid",
     gap: 8,
     borderTopWidth: 1,
     borderTopStyle: "solid",
-    borderTopColor: "#48423c",
+    borderTopColor: "#dce2ea",
     paddingTop: 15,
   },
-  footLink: { color: "#c9c2b9", textDecoration: "none", padding: 7 },
+  footLink: { color: "#64748b", textDecoration: "none", padding: 7 },
   workspace: { minWidth: 0, overflow: "auto" },
   home: {
-    padding: { default: "42px 48px", "@media (max-width: 720px)": "25px 16px" },
+    padding: { default: "28px 32px", "@media (max-width: 720px)": "25px 16px" },
     maxWidth: 1200,
     margin: "auto",
   },
@@ -79,20 +103,20 @@ const styles = stylex.create({
     marginBottom: 30,
   },
   newPage: { flexShrink: 0, whiteSpace: "nowrap" },
-  pageHeading: { font: "600 42px Georgia, serif", margin: 0 },
+  pageHeading: { fontSize: 28, fontWeight: 650, margin: 0 },
   table: {
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: "#ddd6cb",
-    borderRadius: 12,
+    borderColor: "#dce2ea",
+    borderRadius: 4,
     overflow: "hidden",
-    backgroundColor: "#fffdf8",
+    backgroundColor: "#fff",
   },
   tableHead: {
     fontSize: 11,
     textTransform: "uppercase",
-    color: "#77716a",
-    backgroundColor: "#eee9e0",
+    color: "#64748b",
+    backgroundColor: "#f1f5f9",
     display: { default: "grid", "@media (max-width: 720px)": "none" },
   },
   treeRow: {
@@ -106,7 +130,7 @@ const styles = stylex.create({
     padding: "10px 18px",
     borderTopWidth: 1,
     borderTopStyle: "solid",
-    borderTopColor: "#e9e3da",
+    borderTopColor: "#e2e8f0",
   },
   treeList: { margin: 0, padding: 0, listStyleType: "none" },
   treeName: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 },
@@ -123,33 +147,33 @@ const styles = stylex.create({
     textAlign: "left",
     overflowWrap: "anywhere",
   },
-  virtualFolder: { color: "#77716a", fontStyle: "italic" },
+  virtualFolder: { color: "#64748b", fontStyle: "italic" },
   addChild: { padding: "5px 8px", whiteSpace: "nowrap" },
-  preview: { fontFamily: "monospace", color: "#6650a5", overflowWrap: "anywhere" },
+  preview: { fontFamily: "monospace", color: "#2563eb", overflowWrap: "anywhere" },
   pill: {
     fontSize: 12,
-    backgroundColor: "#f3e4d9",
-    color: "#7e4c2d",
+    backgroundColor: "#fef3c7",
+    color: "#92400e",
     width: "max-content",
     padding: "4px 8px",
     borderRadius: 20,
   },
-  live: { backgroundColor: "#e4eee2", color: "#346039" },
+  live: { backgroundColor: "#dcfce7", color: "#166534" },
   backdrop: {
     position: "fixed",
     inset: 0,
-    backgroundColor: "#27231f99",
+    backgroundColor: "#0f172a66",
     display: "grid",
     placeItems: "center",
     zIndex: 10,
   },
   modal: {
-    backgroundColor: "#fffdf8",
+    backgroundColor: "#fff",
     width: "min(430px, 90vw)",
-    borderRadius: 14,
+    borderRadius: 6,
     padding: 26,
   },
-  modalHeading: { font: "600 30px Georgia, serif" },
+  modalHeading: { fontSize: 24, fontWeight: 650 },
   footer: {
     display: "flex",
     justifyContent: "flex-end",
@@ -170,6 +194,7 @@ export function AdminApp() {
   const [navigation, setNavigation] = createSignal(0);
   const [dirty, setDirty] = createSignal(false);
   const [loggedOut, setLoggedOut] = createSignal(false);
+  const [navigationOpen, setNavigationOpen] = createSignal(false);
   const guard = () => !dirty() || confirm("Discard your unsaved changes?");
   function choose(id?: string, selectedBlock?: string) {
     if (guard()) {
@@ -179,6 +204,7 @@ export function AdminApp() {
       setDefinitionId();
       setNavigation(navigation() + 1);
       setDirty(false);
+      setNavigationOpen(false);
     }
   }
   function changeSection(next: Section, selectedDefinition?: string) {
@@ -189,6 +215,7 @@ export function AdminApp() {
     setDefinitionId(selectedDefinition);
     setNavigation(navigation() + 1);
     setDirty(false);
+    setNavigationOpen(false);
   }
   async function refresh() {
     await refetch();
@@ -205,7 +232,7 @@ export function AdminApp() {
       fallback={<Login onSuccess={() => window.location.reload()} />}
     >
       <div {...stylex.attrs(styles.shell)}>
-        <aside {...stylex.attrs(styles.sidebar)}>
+        <header {...stylex.attrs(styles.topbar)}>
           <a
             {...stylex.attrs(styles.brand)}
             href="/admin"
@@ -214,11 +241,24 @@ export function AdminApp() {
             }}
           >
             <span {...stylex.attrs(common.brandMark)}>B</span>
-            <span>
-              Baddiecore
-              <small {...stylex.attrs(styles.brandSmall)}>Workspace</small>
-            </span>
+            <span>Baddiecore</span>
           </a>
+          <button
+            {...stylex.attrs(common.button, styles.navigationToggle)}
+            aria-expanded={navigationOpen() ? "true" : "false"}
+            aria-controls="workspace-navigation"
+            onClick={() => setNavigationOpen(!navigationOpen())}
+          >
+            {navigationOpen() ? "Close navigation" : "Navigation"}
+          </button>
+          <span {...stylex.attrs(styles.role)}>
+            {data()?.access.role === "admin" ? "Administrator" : data()?.access.role}
+          </span>
+        </header>
+        <aside
+          id="workspace-navigation"
+          {...stylex.attrs(styles.sidebar, !navigationOpen() && styles.navigationClosed)}
+        >
           <ContentSidebar
             pages={data()?.pages ?? []}
             components={data()?.components ?? []}
@@ -337,15 +377,17 @@ export function AdminApp() {
                                 components={d().components}
                                 onDirty={setDirty}
                                 onSave={async (value, isNew) => {
-                                  if (section() === "templates")
-                                    await (isNew
-                                      ? api.createTemplate(value as Omit<Template, "id">)
-                                      : api.updateTemplate(value as Template));
-                                  else
-                                    await (isNew
-                                      ? api.createComponent(value as Omit<ComponentDef, "id">)
-                                      : api.updateComponent(value as ComponentDef));
+                                  const result =
+                                    section() === "templates"
+                                      ? await (isNew
+                                          ? api.createTemplate(value as Omit<Template, "id">)
+                                          : api.updateTemplate(value as Template))
+                                      : await (isNew
+                                          ? api.createComponent(value as Omit<ComponentDef, "id">)
+                                          : api.updateComponent(value as ComponentDef));
                                   await refresh();
+                                  setDefinitionId(result.id);
+                                  return result;
                                 }}
                               />
                             )}
