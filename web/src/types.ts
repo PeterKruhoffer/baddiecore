@@ -34,6 +34,7 @@ export interface Page {
   id: string;
   title: string;
   slug: string;
+  aliases: string[];
   template_id: string;
   blocks: Block[];
   revision: number;

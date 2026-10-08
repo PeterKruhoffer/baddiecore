@@ -51,6 +51,8 @@ struct PageDraft {
     id: String,
     title: String,
     slug: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
     template_id: String,
     blocks: Vec<BlockDraft>,
 }
@@ -70,6 +72,7 @@ impl From<&Page> for PageDraft {
             id: page.id.clone(),
             title: page.title.clone(),
             slug: page.slug.clone(),
+            aliases: page.aliases.clone(),
             template_id: page.template_id.clone(),
             blocks: page
                 .blocks
@@ -95,6 +98,7 @@ impl PageDraft {
             id: self.id,
             title: self.title,
             slug: self.slug,
+            aliases: self.aliases,
             template_id: self.template_id,
             blocks: self
                 .blocks
@@ -378,6 +382,7 @@ fn merge(
     for page in &pages {
         definitions.validate(page)?;
     }
+    crate::validate_route_paths(tx, &pages)?;
     Ok(())
 }
 
@@ -544,6 +549,7 @@ mod tests {
             id: "p".into(),
             title: "T".into(),
             slug: "/".into(),
+            aliases: vec!["/welcome".into()],
             template_id: "t".into(),
             blocks: vec![BlockDraft {
                 id: "b".into(),

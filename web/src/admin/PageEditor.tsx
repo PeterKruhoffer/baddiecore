@@ -151,6 +151,7 @@ export function PageEditor(p: Props) {
   const [draft, setDraft] = createSignal(structuredClone(p.page));
   const [parent, setParent] = createSignal(parentPath(p.page.slug));
   const [segment, setSegment] = createSignal(pathSegment(p.page.slug));
+  const [aliasesText, setAliasesText] = createSignal((p.page.aliases ?? []).join("\n"));
   const [selected, setSelected] = createSignal<string | undefined>(
     p.initialBlockId ?? p.page.blocks[0]?.id,
   );
@@ -405,6 +406,32 @@ export function PageEditor(p: Props) {
                 their current URLs until each changed page is published again.
               </p>
             </Show>
+            <label {...stylex.attrs(common.label)}>
+              Route aliases
+              <textarea
+                {...stylex.attrs(common.control)}
+                rows={3}
+                placeholder="/summer-sale"
+                aria-describedby="route-alias-help"
+                value={aliasesText()}
+                onInput={(e) => {
+                  setAliasesText(e.currentTarget.value);
+                  update({
+                    ...draft(),
+                    aliases: e.currentTarget.value
+                      .split("\n")
+                      .map((path) => path.trim())
+                      .filter(Boolean),
+                  });
+                }}
+              />
+            </label>
+            <p id="route-alias-help" {...stylex.attrs(styles.pathHelp)}>
+              One absolute path per line, using letters, numbers, hyphens or underscores. After
+              publication, each alias permanently redirects (301) to this page's published path.
+              Query parameters are preserved. The page path stays canonical and appears in the
+              browser. Clear this field and publish to remove aliases.
+            </p>
           </details>
           <h3 {...stylex.attrs(styles.sideHeading)}>Page structure</h3>
           <For each={template()?.regions}>

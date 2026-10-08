@@ -7,7 +7,7 @@ use std::{
 use axum::{
     Extension, Json, Router,
     extract::{Path as AxumPath, Query, Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -82,6 +82,8 @@ pub struct Page {
     pub id: String,
     pub title: String,
     pub slug: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub template_id: String,
     pub blocks: Vec<Block>,
     pub revision: i64,
@@ -170,6 +172,7 @@ impl AppState {
             "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ] {
@@ -315,6 +318,7 @@ impl AppState {
                 id: "home".into(),
                 title: "Home".into(),
                 slug: "/".into(),
+                aliases: vec![],
                 template_id: template.id,
                 blocks,
                 revision: 1,
@@ -435,7 +439,36 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
         .with_state(state.clone())
         .merge(state.auth.routes())
+        .layer(middleware::from_fn_with_state(state, redirect_alias))
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
+}
+
+async fn redirect_alias(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    if matches!(*request.method(), Method::GET | Method::HEAD) && validate_slug(&path).is_ok() {
+        let target = state
+            .read(move |db| {
+                db.exec_first::<String, _, _>(
+                    "SELECT s.slug FROM route_aliases a JOIN snapshots s ON s.page_id=a.page_id WHERE a.slug=?",
+                    (path,),
+                )
+                .map_err(db_error)
+            })
+            .await;
+        match target {
+            Ok(Some(mut target)) => {
+                if let Some(query) = request.uri().query() {
+                    target.push('?');
+                    target.push_str(query);
+                }
+                return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, target)])
+                    .into_response();
+            }
+            Err(error) => return error.into_response(),
+            Ok(None) => {}
+        }
+    }
+    next.run(request).await
 }
 
 async fn health(State(state): State<AppState>) -> Result<StatusCode> {
@@ -537,12 +570,15 @@ async fn create_page(
                 id: Uuid::new_v4().to_string(),
                 title: input.title,
                 slug: input.slug,
+                aliases: vec![],
                 template_id: input.template_id,
                 blocks: vec![],
                 revision: 1,
                 published_revision: None,
             };
             insert_page(db, &page)?;
+            let pages = load_all(db, "pages")?;
+            validate_route_paths(db, &pages)?;
             Ok((StatusCode::CREATED, Json(page)))
         })
         .await
@@ -561,6 +597,11 @@ async fn update_page(
             let old = require_page(db, &id)?;
             access.page(&old.slug)?;
             access.page(&page.slug)?;
+            let old_aliases: HashSet<_> = old.aliases.iter().collect();
+            let new_aliases: HashSet<_> = page.aliases.iter().collect();
+            for path in old_aliases.symmetric_difference(&new_aliases) {
+                access.page(path)?;
+            }
             if page.revision != old.revision {
                 return Err(ApiError::conflict("stale revision"));
             }
@@ -596,6 +637,7 @@ async fn update_page(
                 if pages.iter().any(|p| !paths.insert(&p.slug)) {
                     return Err(ApiError::conflict("a destination path already exists"));
                 }
+                validate_route_paths(db, &pages)?;
                 // Temporary non-public paths permit moves to an ancestor without
                 // transient unique-key collisions. Snapshots remain untouched.
                 changed.push(page.clone());
@@ -620,6 +662,8 @@ async fn update_page(
                 (&page.slug, json(&page)?, id),
             )
             .map_err(constraint_error)?;
+            let pages = load_all(db, "pages")?;
+            validate_route_paths(db, &pages)?;
             Ok(Json(page))
         })
         .await
@@ -650,6 +694,18 @@ async fn publish_page(
 fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
     snapshot.page.published_revision = Some(snapshot.page.revision);
     let page = &snapshot.page;
+    let occupied: Vec<String> = db
+        .exec(
+            "SELECT slug FROM snapshots WHERE page_id<>? UNION ALL SELECT slug FROM route_aliases WHERE page_id<>?",
+            (&page.id, &page.id),
+        )
+        .map_err(db_error)?;
+    if occupied
+        .iter()
+        .any(|path| path == &page.slug || page.aliases.contains(path))
+    {
+        return Err(ApiError::conflict("a published path already exists"));
+    }
     db.exec_drop(
         "UPDATE pages SET data=? WHERE id=?",
         (json(page)?, &page.id),
@@ -663,6 +719,15 @@ fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
         (&page.id, &page.slug, json(&snapshot)?),
     )
     .map_err(constraint_error)?;
+    db.exec_drop("DELETE FROM route_aliases WHERE page_id=?", (&page.id,))
+        .map_err(db_error)?;
+    for alias in &page.aliases {
+        db.exec_drop(
+            "INSERT INTO route_aliases(slug,page_id) VALUES(?,?)",
+            (alias, &page.id),
+        )
+        .map_err(constraint_error)?;
+    }
     Ok(snapshot.page)
 }
 async fn delete_page(
@@ -885,6 +950,15 @@ impl Definitions {
             return Err(ApiError::bad("title is required"));
         }
         validate_slug(&page.slug)?;
+        let mut aliases = HashSet::new();
+        for alias in &page.aliases {
+            validate_slug(alias)?;
+            if alias == &page.slug || !aliases.insert(alias) {
+                return Err(ApiError::bad(
+                    "aliases must be unique and different from the page path",
+                ));
+            }
+        }
         let template = self
             .templates
             .get(&page.template_id)
@@ -978,6 +1052,41 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     }
     Ok(())
 }
+fn validate_route_paths(db: &mut impl Queryable, pages: &[Page]) -> Result<()> {
+    let mut paths = HashMap::new();
+    for page in pages {
+        for path in std::iter::once(&page.slug).chain(&page.aliases) {
+            if paths.insert(path.as_str(), page.id.as_str()).is_some() {
+                return Err(ApiError::conflict("a page or alias already uses this path"));
+            }
+        }
+    }
+    let published_aliases: Vec<(String, String)> = db
+        .query("SELECT slug,page_id FROM route_aliases")
+        .map_err(db_error)?;
+    for (path, owner) in published_aliases {
+        if paths.get(path.as_str()).is_some_and(|id| *id != owner) {
+            return Err(ApiError::conflict(
+                "a published alias already uses this path",
+            ));
+        }
+    }
+    let snapshots: Vec<(String, String)> = db
+        .query("SELECT slug,page_id FROM snapshots")
+        .map_err(db_error)?;
+    for page in pages {
+        if snapshots
+            .iter()
+            .any(|(path, owner)| owner != &page.id && page.aliases.contains(path))
+        {
+            return Err(ApiError::conflict(
+                "a published page already uses this alias path",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn is_descendant(path: &str, parent: &str) -> bool {
     path != parent
         && (parent == "/"

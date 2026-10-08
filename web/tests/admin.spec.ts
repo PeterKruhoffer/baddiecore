@@ -11,14 +11,15 @@ async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
     const body = req.method() === "GET" ? undefined : req.postDataJSON();
     if (body) writes.push({ url, body });
     if (url === "/api/admin/bootstrap") return route.fulfill({ json: data });
-    if (url === "/api/admin/pages/home" && req.method() === "PUT") {
+    if (/^\/api\/admin\/pages\/[^/]+$/.test(url) && req.method() === "PUT") {
       if (failures.save)
         return route.fulfill({
           status: 409,
           json: { error: "Draft changed. Reload before saving." },
         });
-      data.pages[0] = { ...body, revision: body.revision + 1 } as Page;
-      return route.fulfill({ json: data.pages[0] });
+      const index = data.pages.findIndex((p) => p.id === url.split("/").at(-1));
+      data.pages[index] = { ...body, revision: body.revision + 1 } as Page;
+      return route.fulfill({ json: data.pages[index] });
     }
     if (url === "/api/admin/pages/home/publish") {
       if (failures.publish)
@@ -184,6 +185,57 @@ test("save conflicts prevent publication and retain edits; a later publish failu
   await expect(dialog.getByRole("button", { name: "Publish page", exact: true })).toBeEnabled();
   await expect(dialog).toContainText("13");
   expect(state.data.pages[0].published_revision).toBe(11);
+});
+
+test("route aliases preserve multiline editing, save with the draft, and can be removed", async ({
+  page,
+}) => {
+  const state = await openWorkspace(page);
+  await page.getByRole("button", { name: "Team", exact: true }).click();
+  await page.getByText("Page details · Landing page", { exact: true }).click();
+  const aliases = page.getByRole("textbox", { name: "Route aliases", exact: true });
+  await expect(aliases).toHaveValue("");
+  await expect(aliases).toHaveAttribute("aria-describedby", "route-alias-help");
+  await capture(page, "aliases-empty");
+  await aliases.fill("/team");
+  await aliases.press("End");
+  await aliases.press("Enter");
+  await aliases.pressSequentially("/meet-us");
+  await expect(aliases).toHaveValue("/team\n/meet-us");
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  expect(state.writes[0].body.aliases).toEqual(["/team", "/meet-us"]);
+  expect(state.writes[0].body.slug).toBe("/about/team");
+  await expect(page.getByText("Saved draft · Revision 5", { exact: true })).toBeVisible();
+  await capture(page, "aliases-saved");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await aliases.scrollIntoViewIfNeeded();
+  await expect(aliases).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await capture(page, "aliases-narrow");
+  await aliases.fill("");
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  expect(state.writes[1].body.aliases).toEqual([]);
+});
+
+test("alias changes save before publication and survive a rejected save", async ({ page }) => {
+  const state = await openWorkspace(page);
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByText("Page details · Landing page", { exact: true }).click();
+  const aliases = page.getByRole("textbox", { name: "Route aliases", exact: true });
+  await aliases.fill("/welcome");
+  state.failures.save = true;
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Draft changed");
+  await expect(aliases).toHaveValue("/welcome");
+  state.failures.save = false;
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Save and publish" }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(state.writes.slice(1).map((write) => write.url)).toEqual([
+    "/api/admin/pages/home",
+    "/api/admin/pages/home/publish",
+  ]);
+  expect(state.data.pages[0].aliases).toEqual(["/welcome"]);
 });
 
 test("review decisions target the selected submitted snapshot, require change feedback, and retain feedback on conflicts", async ({

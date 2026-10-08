@@ -1011,6 +1011,389 @@ async fn custom_auth_guards_cms_without_affecting_public_content() {
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn aliases_redirect_only_after_publication_and_follow_the_published_path() {
+    let app = setup().await;
+    let mut page = create_test_page(&app, "/shop/campaign-2026").await;
+    page.aliases = vec!["/summer-sale".into(), "/Sale".into()];
+    let url = format!("/api/admin/pages/{}", page.id);
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    assert_ne!(
+        call(&app.app, "GET", "/summer-sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    let publish_url = format!("{url}/publish");
+    page = read(
+        call(
+            &app.app,
+            "POST",
+            &publish_url,
+            Some(&app.cookie),
+            Some(&json!({"revision":page.revision})),
+        )
+        .await,
+    )
+    .await;
+    for method in ["GET", "HEAD"] {
+        let response = call(
+            &app.app,
+            method,
+            "/summer-sale?utm_source=email&x=%2F",
+            None,
+            None::<&Value>,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "/shop/campaign-2026?utm_source=email&x=%2F"
+        );
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty()
+        );
+    }
+    for path in [
+        "/sale",
+        "/summer-sale/child",
+        "/shop/campaign-2026",
+        "/health",
+        "/admin",
+    ] {
+        assert_ne!(
+            call(&app.app, "GET", path, None, None::<&Value>)
+                .await
+                .status(),
+            StatusCode::MOVED_PERMANENTLY
+        );
+    }
+    assert_ne!(
+        call(&app.app, "POST", "/summer-sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    page.slug = "/shop/autumn".into();
+    page.aliases = vec!["/summer-sale".into(), "/shop/campaign-2026".into()];
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    assert_eq!(
+        call(&app.app, "GET", "/summer-sale", None, None::<&Value>)
+            .await
+            .headers()[header::LOCATION],
+        "/shop/campaign-2026"
+    );
+    page = read(
+        call(
+            &app.app,
+            "POST",
+            &publish_url,
+            Some(&app.cookie),
+            Some(&json!({"revision":page.revision})),
+        )
+        .await,
+    )
+    .await;
+    let reopened = router(
+        AppState::open(&app.db.url, "secret".into(), false).unwrap(),
+        app._dir.path(),
+    );
+    for path in ["/summer-sale", "/shop/campaign-2026"] {
+        let response = call(&reopened, "GET", path, None, None::<&Value>).await;
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(response.headers()[header::LOCATION], "/shop/autumn");
+    }
+    assert_ne!(
+        call(&app.app, "GET", "/Sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    page.aliases.clear();
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    assert_eq!(
+        call(&app.app, "GET", "/summer-sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    page = read(
+        call(
+            &app.app,
+            "POST",
+            &publish_url,
+            Some(&app.cookie),
+            Some(&json!({"revision":page.revision})),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(
+        call(&app.app, "GET", "/summer-sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    page.aliases.push("/autumn-sale".into());
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            &publish_url,
+            Some(&app.cookie),
+            Some(&json!({"revision":page.revision}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app.app, "DELETE", &url, Some(&app.cookie), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_ne!(
+        call(&app.app, "GET", "/autumn-sale", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+}
+
+#[tokio::test]
+async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
+    let app = setup().await;
+    let mut first = create_test_page(&app, "/first").await;
+    let mut second = create_test_page(&app, "/second").await;
+    let first_url = format!("/api/admin/pages/{}", first.id);
+    let second_url = format!("/api/admin/pages/{}", second.id);
+    for aliases in [
+        vec!["/first"],
+        vec!["/dup", "/dup"],
+        vec!["//evil.test"],
+        vec!["/Admin/x"],
+        vec!["/api/x"],
+        vec!["/assets/x"],
+        vec!["/health/x"],
+        vec!["/bad?x=1"],
+        vec!["/bad\r\nLocation: evil"],
+        vec!["relative"],
+        vec!["/trailing/"],
+        vec!["/ümlaut"],
+        vec!["/bad//path"],
+    ] {
+        let mut invalid = first.clone();
+        invalid.aliases = aliases.into_iter().map(String::from).collect();
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                &first_url,
+                Some(&app.cookie),
+                Some(&invalid)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut invalid = first.clone();
+    invalid.aliases.push(format!("/{}", "a".repeat(2048)));
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &first_url,
+            Some(&app.cookie),
+            Some(&invalid)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    invalid.aliases = vec!["/second".into()];
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &first_url,
+            Some(&app.cookie),
+            Some(&invalid)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    first.aliases = vec!["/offer".into()];
+    first = read(call(&app.app, "PUT", &first_url, Some(&app.cookie), Some(&first)).await).await;
+    second.aliases = vec!["/offer".into()];
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &second_url,
+            Some(&app.cookie),
+            Some(&second)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    second.aliases.clear();
+    second.slug = "/offer".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            &second_url,
+            Some(&app.cookie),
+            Some(&second)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages",
+            Some(&app.cookie),
+            Some(&json!({"title":"Collision","slug":"/offer","template_id":"homepage"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            &format!("{first_url}/publish"),
+            Some(&app.cookie),
+            Some(&json!({"revision":first.revision}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    first.slug = "/renamed".into();
+    first.aliases.clear();
+    let _: Page =
+        read(call(&app.app, "PUT", &first_url, Some(&app.cookie), Some(&first)).await).await;
+    second.slug = "/second".into();
+    // Neither a live alias nor a live page path can be claimed by another draft alias.
+    for path in ["/offer", "/first"] {
+        second.aliases = vec![path.into()];
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                &second_url,
+                Some(&app.cookie),
+                Some(&second)
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+    }
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    baddiecore::serialization::pull(&pool, dir.path(), true, false).unwrap();
+    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
+    edit_yaml(&dir.path().join(format!("pages/{}.yaml", second.id)), |v| {
+        v["aliases"] = json!(["/offer"])
+    });
+    assert!(baddiecore::serialization::push(&pool, dir.path(), true, false).is_err());
+    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    assert_eq!(
+        call(&app.app, "GET", "/offer", None, None::<&Value>)
+            .await
+            .headers()[header::LOCATION],
+        "/first"
+    );
+    edit_yaml(&dir.path().join(format!("pages/{}.yaml", second.id)), |v| {
+        v["aliases"] = json!(["/valid-import"])
+    });
+    baddiecore::serialization::push(&pool, dir.path(), true, false).unwrap();
+    baddiecore::serialization::pull(&pool, dir.path(), true, true).unwrap();
+    let exported: Value = serde_yaml_ng::from_slice(
+        &std::fs::read(dir.path().join(format!("pages/{}.yaml", second.id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(exported["data"]["aliases"], json!(["/valid-import"]));
+    assert_ne!(
+        call(&app.app, "GET", "/valid-import", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+}
+
+#[tokio::test]
+async fn editors_need_alias_path_grants_and_review_approval_publishes_aliases() {
+    let app = setup().await;
+    members(&app).await;
+    let scoped = member_app(&app);
+    let mut page = create_test_page(&app, "/news/story").await;
+    let url = format!("/api/admin/pages/{}", page.id);
+    page.aliases = vec!["/newspaper/story".into()];
+    assert_eq!(
+        call(&scoped, "PUT", &url, Some("editor"), Some(&page))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    page.aliases = vec!["/news/offer".into()];
+    page = read(call(&scoped, "PUT", &url, Some("editor"), Some(&page)).await).await;
+    let review: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &format!("{url}/submit"),
+            Some("editor"),
+            Some(&json!({"revision":page.revision})),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(
+        call(&app.app, "GET", "/news/offer", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert_eq!(call(&scoped, "POST", &format!("/api/admin/reviews/{}", page.id), Some("reviewer"), Some(&json!({"revision":page.revision,"submission_id":review["submission_id"],"approve":true,"feedback":""}))).await.status(), StatusCode::OK);
+    assert_eq!(
+        call(&app.app, "GET", "/news/offer", None, None::<&Value>)
+            .await
+            .headers()[header::LOCATION],
+        "/news/story"
+    );
+    // An admin-owned alias outside the editor's grants may remain during content edits,
+    // but that editor cannot remove or change it.
+    page.aliases.push("/outside".into());
+    page = read(call(&scoped, "PUT", &url, Some("admin"), Some(&page)).await).await;
+    page.title = "Edited copy".into();
+    page = read(call(&scoped, "PUT", &url, Some("editor"), Some(&page)).await).await;
+    page.aliases.retain(|path| path != "/outside");
+    assert_eq!(
+        call(&scoped, "PUT", &url, Some("editor"), Some(&page))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
 async fn create_test_page(app: &TestApp, slug: &str) -> Page {
     let response = call(
         &app.app,

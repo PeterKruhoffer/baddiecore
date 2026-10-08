@@ -139,6 +139,10 @@ Choose a parent and a URL segment when creating or moving a page. `/about/team` 
 
 Moving a draft does not change published URLs. Publish each affected page when ready; there are no automatic redirects or link rewrites.
 
+To give a page a shorter or friendlier entry URL, open **Page details → Route aliases** and enter one absolute path per line, such as `/summer-sale`. Save and publish, or submit for review. Each alias then sends a server-side `301 Moved Permanently` redirect to the page's published path, preserving query parameters. The original page path remains canonical and appears in the browser after the redirect. Aliases are exact paths and do not redirect descendants. Paths already used by other pages or aliases are rejected; editors need grants for alias paths they add or remove.
+
+Alias edits stay private until publication. Moving and republishing a page updates its alias targets without redirect chains. To keep the old page URL working after a move, explicitly add it as an alias. Clear an alias and publish to remove its live redirect; deleting the page removes all its aliases. Browsers and search engines may cache permanent redirects. Aliases also round-trip through page YAML exports. Headless consumers receive aliases in published Page JSON and must implement redirects on their own frontend host.
+
 ### Membership and review
 
 Administrators manage membership and groups, edit schemas, delete pages, and publish directly. Reviewers, shown as super users in the membership form, can edit all pages and decide submissions, but cannot manage membership, change schemas, delete pages, or bypass review through direct publish. Editors can read, create, edit, move, and submit drafts only inside their individual or group path grants. All members can read component and template definitions for authoring.
