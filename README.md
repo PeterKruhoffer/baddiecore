@@ -1,6 +1,6 @@
 # Baddiecore
 
-> This project is AI-generated. Review the code and documentation before using it in production.
+> This project is AI-generated. And so is everytihing in this README.
 
 A self-hosted CMS you can run in a Linux container and extend in source. It uses a Rust/Axum server, MySQL 8.4, and a Solid 2 editor styled with StyleX.
 
