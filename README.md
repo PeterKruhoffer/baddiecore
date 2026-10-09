@@ -1,5 +1,7 @@
 # Baddiecore
 
+### The only reason this project exists is because Sitecore, for some reason, have decided not to use AI to rewrite their selfhostable version into something that can run on linux 🙃
+
 > This project is AI-generated. And so is everytihing in this README.
 
 A self-hosted CMS you can run in a Linux container and extend in source. It uses a Rust/Axum server, MySQL 8.4, and a Solid 2 editor styled with StyleX.
