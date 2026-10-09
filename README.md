@@ -1,6 +1,6 @@
 # Baddiecore
 
-### The only reason this project exists is because Sitecore, for some reason, have decided not to use AI to rewrite their selfhostable version into something that can run on linux 🙃
+### The only reason this project exists is because Sitecore, for some reason, have decided not to use AI to rewrite their self hostable version into something that can run on linux 🙃
 
 > This project is AI-generated. And so is everytihing in this README.
 
