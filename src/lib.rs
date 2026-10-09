@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 pub mod auth;
 pub mod headless;
+mod package;
 pub mod serialization;
 pub mod workflow;
 
@@ -174,6 +175,8 @@ impl AppState {
             "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // What each Git export path held at this database's last pull or push. See serialization.
+            "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ] {
             conn.query_drop(statement).map_err(|e| {
@@ -319,7 +322,7 @@ impl AppState {
                 title: "Home".into(),
                 slug: "/".into(),
                 aliases: vec![],
-                template_id: template.id,
+                template_id: template.id.clone(),
                 blocks,
                 revision: 1,
                 published_revision: None,
@@ -329,7 +332,7 @@ impl AppState {
                 (&page.id, &page.slug, json(&page)?),
             )
             .map_err(db_error)?;
-            Ok(())
+            serialization::record_base(tx, &components, &[template])
         })
     }
 
@@ -426,9 +429,16 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
             get(workflow::get_organization).put(workflow::save_organization),
         )
         .route("/templates", post(create_template))
-        .route("/templates/{id}", put(update_template))
+        .route(
+            "/templates/{id}",
+            put(update_template).delete(delete_template),
+        )
         .route("/components", post(create_component))
-        .route("/components/{id}", put(update_component))
+        .route(
+            "/components/{id}",
+            put(update_component).delete(delete_component),
+        )
+        .route("/package", get(package::export).post(package::install))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     let index = static_dir.as_ref().join("index.html");
     Router::new()
@@ -806,6 +816,65 @@ async fn update_template(
         .await
 }
 
+async fn delete_template(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode> {
+    state
+        .run_as(editor, move |db, access| {
+            access.admin()?;
+            delete_definition(db, "templates", &id)?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// Delete an unused template or component. Published snapshots keep their own copies.
+fn delete_definition(db: &mut Transaction<'_>, table: &str, id: &str) -> Result<()> {
+    let pages: Vec<Page> = load_all(db, "pages")?;
+    let mut users = Vec::new();
+    if table == "templates" {
+        users.extend(
+            pages
+                .iter()
+                .filter(|p| p.template_id == id)
+                .map(|p| format!("page {}", p.slug)),
+        );
+    } else {
+        let templates: Vec<Template> = load_all(db, "templates")?;
+        users.extend(
+            templates
+                .iter()
+                .filter(|t| {
+                    t.regions
+                        .iter()
+                        .any(|r| r.allowed_components.iter().any(|c| c == id))
+                })
+                .map(|t| format!("template {}", t.name)),
+        );
+        users.extend(
+            pages
+                .iter()
+                .filter(|p| p.blocks.iter().any(|b| b.component_id == id))
+                .map(|p| format!("page {}", p.slug)),
+        );
+    }
+    if !users.is_empty() {
+        let kind = table.trim_end_matches('s');
+        return Err(ApiError::conflict(format!(
+            "{kind} {id} is still used by {}",
+            users.join(", ")
+        )));
+    }
+    db.exec_drop(format!("DELETE FROM {table} WHERE id=?"), (id,))
+        .map_err(db_error)?;
+    if db.affected_rows() == 0 {
+        return Err(ApiError::not_found());
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct NewComponent {
     name: String,
@@ -859,6 +928,19 @@ async fn update_component(
             )
             .map_err(db_error)?;
             Ok(Json(item))
+        })
+        .await
+}
+async fn delete_component(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode> {
+    state
+        .run_as(editor, move |db, access| {
+            access.admin()?;
+            delete_definition(db, "components", &id)?;
+            Ok(StatusCode::NO_CONTENT)
         })
         .await
 }

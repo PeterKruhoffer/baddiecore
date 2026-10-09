@@ -9,6 +9,7 @@ import { DefinitionEditor } from "./DefinitionEditor";
 import { ContentSidebar } from "./ContentSidebar";
 import { OrganizationEditor } from "./OrganizationEditor";
 import { ReviewOverview } from "./ReviewOverview";
+import { PackageExport, PackageInstall } from "./Packages";
 import { common } from "../common.stylex";
 import {
   buildPageTree,
@@ -103,6 +104,8 @@ const styles = stylex.create({
     marginBottom: 30,
   },
   newPage: { flexShrink: 0, whiteSpace: "nowrap" },
+  headerActions: { display: "flex", gap: 8, flexShrink: 0 },
+  rowActions: { display: "flex", gap: 6 },
   pageHeading: { fontSize: 28, fontWeight: 650, margin: 0 },
   table: {
     borderWidth: 1,
@@ -389,6 +392,13 @@ export function AdminApp() {
                                   setDefinitionId(result.id);
                                   return result;
                                 }}
+                                onDelete={async (id) => {
+                                  await (section() === "templates"
+                                    ? api.deleteTemplate(id)
+                                    : api.deleteComponent(id));
+                                  setDefinitionId();
+                                  await refresh();
+                                }}
                               />
                             )}
                           </For>
@@ -402,6 +412,8 @@ export function AdminApp() {
                             pages={d().pages}
                             templates={d().templates}
                             paths={d().access.role === "editor" ? d().access.paths : ["/"]}
+                            isAdmin={d().access.role === "admin"}
+                            onInstalled={refresh}
                             onChoose={choose}
                             onCreate={async (value) => {
                               const created = await api.createPage(value);
@@ -465,6 +477,8 @@ function PageHome(p: {
   pages: Page[];
   templates: Template[];
   paths: string[];
+  isAdmin: boolean;
+  onInstalled: () => Promise<void>;
   onChoose: (id: string) => void;
   onCreate: (v: Pick<Page, "title" | "slug" | "template_id">) => Promise<void>;
 }) {
@@ -508,13 +522,18 @@ function PageHome(p: {
           <h1 {...stylex.attrs(styles.pageHeading)}>Pages</h1>
           <p {...stylex.attrs(common.muted)}>Draft, preview and publish the pages on your site.</p>
         </div>
-        <button
-          {...stylex.attrs(common.button, common.primary, styles.newPage)}
-          disabled={!p.paths.length}
-          onClick={() => openCreate()}
-        >
-          New page
-        </button>
+        <div {...stylex.attrs(styles.headerActions)}>
+          <Show when={p.isAdmin}>
+            <PackageInstall onInstalled={p.onInstalled} />
+          </Show>
+          <button
+            {...stylex.attrs(common.button, common.primary, styles.newPage)}
+            disabled={!p.paths.length}
+            onClick={() => openCreate()}
+          >
+            New page
+          </button>
+        </div>
       </header>
       <div {...stylex.attrs(styles.table)}>
         <div {...stylex.attrs(styles.treeRow, styles.tableHead)}>
@@ -527,6 +546,7 @@ function PageHome(p: {
           <PageTreeRows
             node={tree()}
             level={0}
+            isAdmin={p.isAdmin}
             expanded={expanded()}
             onToggle={(path) => {
               const next = new Set(expanded());
@@ -623,6 +643,7 @@ function PageHome(p: {
 function PageTreeRows(p: {
   node: PageTreeNode;
   level: number;
+  isAdmin: boolean;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onChoose: (id: string) => void;
@@ -674,12 +695,17 @@ function PageTreeRows(p: {
           )}
         </Show>
         <span>{p.node.page ? `Revision ${p.node.page.revision}` : "—"}</span>
-        <button
-          {...stylex.attrs(common.button, styles.addChild)}
-          onClick={() => p.onAdd(p.node.path)}
-        >
-          + Child
-        </button>
+        <span {...stylex.attrs(styles.rowActions)}>
+          <button
+            {...stylex.attrs(common.button, styles.addChild)}
+            onClick={() => p.onAdd(p.node.path)}
+          >
+            + Child
+          </button>
+          <Show when={p.isAdmin}>
+            <PackageExport path={p.node.path} />
+          </Show>
+        </span>
       </div>
       <Show when={open() && p.node.children.length}>
         <ul {...stylex.attrs(styles.treeList)}>

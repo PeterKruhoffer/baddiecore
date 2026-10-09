@@ -345,6 +345,100 @@ test("templates preview each region's own allowlist and limits, then remain open
   ]);
 });
 
+test("admins export page branches and install packages as drafts", async ({ page }) => {
+  const state = await openWorkspace(page);
+  const uploads: string[] = [];
+  let bootstraps = 0;
+  await page.route("**/api/admin/bootstrap", (route) => {
+    bootstraps++;
+    return route.fulfill({ json: state.data });
+  });
+  await page.route("**/api/admin/package**", async (route) => {
+    const req = route.request();
+    if (req.method() === "GET") {
+      expect(new URL(req.url()).searchParams.get("path")).toBe("/");
+      return route.fulfill({
+        body: "zip",
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": 'attachment; filename="baddiecore-site.zip"',
+        },
+      });
+    }
+    uploads.push(req.headers()["content-type"]);
+    if (uploads.length === 1)
+      return route.fulfill({
+        status: 409,
+        json: { error: "a page or alias already uses this path" },
+      });
+    return route.fulfill({
+      json: {
+        created: ["/news", "/news/story"],
+        updated: ["/about"],
+        unchanged: [],
+        components_added: 0,
+        templates_added: 1,
+      },
+    });
+  });
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export /", exact: true }).click();
+  expect((await download).suggestedFilename()).toBe("baddiecore-site.zip");
+
+  await page.getByRole("button", { name: "Import package", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a content package" });
+  const install = dialog.getByRole("button", { name: "Install package", exact: true });
+  await expect(install).toBeDisabled();
+  await dialog.getByLabel("Package (.zip)").setInputFiles({
+    name: "baddiecore-news.zip",
+    mimeType: "application/zip",
+    buffer: Buffer.from("zip"),
+  });
+  await install.click();
+  await expect(dialog.getByRole("alert")).toHaveText("a page or alias already uses this path");
+  await install.click();
+  await expect(dialog.getByRole("status")).toContainText("Created 2: /news, /news/story");
+  await expect(dialog.getByRole("status")).toContainText("Updated 1: /about");
+  await expect(dialog.getByRole("status")).toContainText("Added 1 templates and 0 components");
+  expect(uploads).toEqual(["application/zip", "application/zip"]);
+  expect(bootstraps).toBe(1);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
+test("deleting a template explains why it is still in use, then clears the editor", async ({
+  page,
+}) => {
+  const state = await openWorkspace(page);
+  const deletes: string[] = [];
+  await page.route("**/api/admin/templates/landing", (route) => {
+    deletes.push(route.request().method());
+    if (deletes.length === 1)
+      return route.fulfill({
+        status: 409,
+        json: { error: "template landing is still used by page /" },
+      });
+    state.data.templates = [];
+    return route.fulfill({ status: 204 });
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Expand Templates", exact: true }).click();
+  await page.getByRole("button", { name: "Landing page", exact: true }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("template landing is still used by page /");
+  await expect(page.getByRole("heading", { name: "Landing page", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "New template", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
+  expect(deletes).toEqual(["DELETE", "DELETE"]);
+});
+
+test("editors cannot export or import packages", async ({ page }) => {
+  await openWorkspace(page, bootstrap("editor"));
+  await expect(page.getByRole("button", { name: "Import package" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Export / })).toHaveCount(0);
+});
+
 test("editors cannot publish, decide reviews or edit schemas; submission saves the latest revision", async ({
   page,
 }) => {

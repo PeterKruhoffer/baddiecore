@@ -1306,14 +1306,17 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
             StatusCode::CONFLICT
         );
     }
-    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    baddiecore::serialization::pull(&pool, dir.path(), true, false).unwrap();
+    let package = export_package(&app, "/second").await;
+    let entry = format!("pages/{}.yaml", second.id);
+    let with_aliases = |aliases: Value| {
+        repack(&package, |files| {
+            files.get_mut(&entry).unwrap()["data"]["aliases"] = aliases
+        })
+    };
     let before = serde_json::to_value(bootstrap(&app).await).unwrap();
-    edit_yaml(&dir.path().join(format!("pages/{}.yaml", second.id)), |v| {
-        v["aliases"] = json!(["/offer"])
-    });
-    assert!(baddiecore::serialization::push(&pool, dir.path(), true, false).is_err());
+    let install = |body| raw_call(&app.app, "POST", "/api/admin/package", &app.cookie, body);
+    let response = install(with_aliases(json!(["/offer"]))).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
     assert_eq!(
         call(&app.app, "GET", "/offer", None, None::<&Value>)
@@ -1321,15 +1324,9 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
             .headers()[header::LOCATION],
         "/first"
     );
-    edit_yaml(&dir.path().join(format!("pages/{}.yaml", second.id)), |v| {
-        v["aliases"] = json!(["/valid-import"])
-    });
-    baddiecore::serialization::push(&pool, dir.path(), true, false).unwrap();
-    baddiecore::serialization::pull(&pool, dir.path(), true, true).unwrap();
-    let exported: Value = serde_yaml_ng::from_slice(
-        &std::fs::read(dir.path().join(format!("pages/{}.yaml", second.id))).unwrap(),
-    )
-    .unwrap();
+    let response = install(with_aliases(json!(["/valid-import"]))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let exported = &package_entries(&export_package(&app, "/second").await)[&entry];
     assert_eq!(exported["data"]["aliases"], json!(["/valid-import"]));
     assert_ne!(
         call(&app.app, "GET", "/valid-import", None, None::<&Value>)
@@ -1589,6 +1586,40 @@ async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_a
     );
 }
 
+/// Package entries parsed as YAML, by name.
+fn package_entries(package: &[u8]) -> std::collections::BTreeMap<String, Value> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package)).unwrap();
+    (0..archive.len())
+        .map(|i| {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().unwrap().into_owned();
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut file, &mut text).unwrap();
+            (name, serde_yaml_ng::from_str(&text).unwrap())
+        })
+        .collect()
+}
+
+/// Edit a package's entries and zip them again.
+fn repack(
+    package: &[u8],
+    edit: impl FnOnce(&mut std::collections::BTreeMap<String, Value>),
+) -> Vec<u8> {
+    let mut files = package_entries(package);
+    edit(&mut files);
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, value) in files {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(
+            &mut zip,
+            serde_yaml_ng::to_string(&value).unwrap().as_bytes(),
+        )
+        .unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
 fn edit_yaml(path: &std::path::Path, edit: impl FnOnce(&mut Value)) {
     let mut value: Value = serde_yaml_ng::from_slice(&std::fs::read(path).unwrap()).unwrap();
     edit(&mut value["data"]);
@@ -1596,64 +1627,53 @@ fn edit_yaml(path: &std::path::Path, edit: impl FnOnce(&mut Value)) {
 }
 
 #[tokio::test]
-async fn cli_pull_push_round_trip_pages_are_opt_in_and_dry_run_rolls_back() {
+async fn cli_pull_push_round_trip_definitions_and_dry_run_rolls_back() {
     use std::process::Command;
     let app = setup().await;
     let dir = tempfile::tempdir().unwrap();
     let run = |command: &str, flags: &[&str]| {
-        let result = Command::new(env!("CARGO_BIN_EXE_baddiecore"))
+        Command::new(env!("CARGO_BIN_EXE_baddiecore"))
             .arg(command)
             .arg(dir.path())
             .args(flags)
             .env("DATABASE_URL", &app.db.url)
             .output()
-            .unwrap();
+            .unwrap()
+    };
+    let ok = |command: &str, flags: &[&str]| {
+        let result = run(command, flags);
         assert!(
             result.status.success(),
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
     };
-    run("pull", &[]);
+    ok("pull", &[]);
     assert!(!dir.path().join("pages").exists());
     let template_path = dir.path().join("templates/homepage.yaml");
     let original = std::fs::read(&template_path).unwrap();
-    run("pull", &[]);
+    ok("pull", &[]);
     assert_eq!(std::fs::read(&template_path).unwrap(), original);
     edit_yaml(&template_path, |v| {
         v["description"] = json!("Reviewed in git")
     });
-    run("push", &["--dry-run"]);
+    ok("push", &["--dry-run"]);
     assert_ne!(
         bootstrap(&app).await.templates[0].description,
         "Reviewed in git"
     );
-    run("push", &[]);
+    ok("push", &[]);
     assert_eq!(
         bootstrap(&app).await.templates[0].description,
         "Reviewed in git"
     );
-    run("pull", &["--pages", "--force"]);
-    let page_path = dir.path().join("pages/home.yaml");
-    let text = std::fs::read_to_string(&page_path).unwrap();
-    assert!(!text.contains("revision"));
-    let before = bootstrap(&app).await.pages[0].clone();
-    run("push", &["--pages"]);
-    assert_eq!(bootstrap(&app).await.pages[0], before);
-    edit_yaml(&page_path, |v| v["title"] = json!("Imported home"));
-    run("push", &[]);
-    assert_eq!(bootstrap(&app).await.pages[0], before);
-    run("push", &["--pages", "--dry-run"]);
-    assert_eq!(bootstrap(&app).await.pages[0], before);
-    run("push", &["--pages"]);
-    let after = bootstrap(&app).await.pages[0].clone();
-    assert_eq!(after.title, "Imported home");
-    assert_eq!(after.revision, before.revision + 1);
-    assert_eq!(after.published_revision, None);
+    // Content pages never travel through Git; they use packages.
+    assert!(!run("pull", &["--pages"]).status.success());
+    assert!(!dir.path().join("pages").exists());
 }
 
 #[tokio::test]
-async fn imports_validate_the_final_batch_and_preserve_live_snapshots() {
+async fn imports_validate_existing_drafts_and_preserve_live_snapshots() {
     use baddiecore::serialization::{pull, push};
     let app = setup().await;
     let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
@@ -1670,32 +1690,31 @@ async fn imports_validate_the_final_batch_and_preserve_live_snapshots() {
         .status(),
         StatusCode::OK
     );
-    pull(&pool, dir.path(), true, false).unwrap();
+    pull(&pool, dir.path(), false).unwrap();
     let before = serde_json::to_value(bootstrap(&app).await).unwrap();
     let component_path = dir.path().join("components/hero.yaml");
-    let page_path = dir.path().join("pages/home.yaml");
+    let field = |required| json!({"name":"new_field","label":"New field","kind":"text","required":required});
     edit_yaml(&component_path, |v| {
-        v["fields"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"name":"new_field","label":"New field","kind":"text","required":true}))
+        v["fields"].as_array_mut().unwrap().push(field(true))
     });
-    // Schema-only push must not break a draft, even though the component write comes first.
+    // A required field would break the home draft, so nothing changes.
     assert!(push(&pool, dir.path(), false, false).is_err());
     assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
-    edit_yaml(&page_path, |v| {
-        v["blocks"][0]["fields"]["new_field"] = json!("Ready")
+    edit_yaml(&component_path, |v| {
+        *v["fields"].as_array_mut().unwrap().last_mut().unwrap() = field(false)
     });
-    push(&pool, dir.path(), true, true).unwrap();
+    push(&pool, dir.path(), false, true).unwrap();
     assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
-    push(&pool, dir.path(), true, false).unwrap();
-    let updated = bootstrap(&app).await.pages[0].clone();
-    assert_eq!(updated.revision, 2);
-    assert_eq!(updated.published_revision, Some(1));
+    push(&pool, dir.path(), false, false).unwrap();
+    let data = bootstrap(&app).await;
+    let hero = data.components.iter().find(|c| c.id == "hero").unwrap();
+    assert!(hero.fields.iter().any(|f| f.name == "new_field"));
+    assert_eq!(
+        (data.pages[0].revision, data.pages[0].published_revision),
+        (1, Some(1))
+    );
     let live: Content =
         read(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await).await;
-    assert_eq!(live.page.revision, 1);
-    assert!(!live.page.blocks[0].fields.contains_key("new_field"));
     assert!(
         !live
             .components
@@ -1706,98 +1725,82 @@ async fn imports_validate_the_final_batch_and_preserve_live_snapshots() {
             .iter()
             .any(|f| f.name == "new_field")
     );
-    // Import definitions and a page into another initialized instance, retaining IDs.
+    // Definitions reach another initialized instance; its pages are untouched.
     let other = setup().await;
     let other_pool = Pool::new(Opts::from_url(&other.db.url).unwrap()).unwrap();
-    push(&other_pool, dir.path(), true, false).unwrap();
-    let imported = bootstrap(&other).await.pages[0].clone();
-    assert_eq!(imported.id, "home");
-    assert_eq!(imported.blocks, updated.blocks);
-    assert_eq!(imported.published_revision, None);
+    let pages = bootstrap(&other).await.pages;
+    push(&other_pool, dir.path(), false, false).unwrap();
+    let imported = bootstrap(&other).await;
+    assert_eq!(imported.pages, pages);
+    let hero = imported.components.iter().find(|c| c.id == "hero").unwrap();
+    assert!(hero.fields.iter().any(|f| f.name == "new_field"));
 }
 
 #[tokio::test]
-async fn import_path_swaps_are_atomic_and_pull_requires_explicit_overwrites() {
+async fn package_path_swaps_are_atomic_and_bring_missing_definitions() {
+    let app = setup().await;
+    let first = create_test_page(&app, "/first").await;
+    let second = create_test_page(&app, "/second").await;
+    let package = export_package(&app, "/").await;
+    let first_entry = format!("pages/{}.yaml", first.id);
+    let second_entry = format!("pages/{}.yaml", second.id);
+    let install = |app: &TestApp, body| {
+        let (router, cookie) = (app.app.clone(), app.cookie.clone());
+        async move { raw_call(&router, "POST", "/api/admin/package", &cookie, body).await }
+    };
+    let half = repack(&package, |files| {
+        files.get_mut(&first_entry).unwrap()["data"]["slug"] = json!("/second")
+    });
+    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
+    assert_eq!(install(&app, half).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
+    let swapped = repack(&package, |files| {
+        files.get_mut(&first_entry).unwrap()["data"]["slug"] = json!("/second");
+        files.get_mut(&second_entry).unwrap()["data"]["slug"] = json!("/first");
+    });
+    assert_eq!(install(&app, swapped).await.status(), StatusCode::OK);
+    let pages = bootstrap(&app).await.pages;
+    let slug = |id: &str| pages.iter().find(|p| p.id == id).unwrap().slug.clone();
+    assert_eq!(
+        (slug(&first.id), slug(&second.id)),
+        ("/second".into(), "/first".into())
+    );
+
+    // New definitions arrive with the pages that use them in another installation.
+    let bundled = repack(&package, |files| {
+        let mut component = files["components/text.yaml"].clone();
+        component["data"]["id"] = json!("package-component");
+        files.insert("components/package-component.yaml".into(), component);
+        let mut template = files["templates/homepage.yaml"].clone();
+        template["data"]["id"] = json!("package-template");
+        template["data"]["regions"][0]["allowed_components"] = json!(["package-component"]);
+        files.insert("templates/package-template.yaml".into(), template);
+        files.get_mut(&second_entry).unwrap()["data"]["template_id"] = json!("package-template");
+    });
+    let other = setup().await;
+    let response = install(&other, bundled).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = read(response).await;
+    assert_eq!(
+        (
+            result["components_added"].clone(),
+            result["templates_added"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+    let imported = bootstrap(&other).await;
+    let page = imported.pages.iter().find(|p| p.id == second.id).unwrap();
+    assert_eq!(page.template_id, "package-template");
+    assert_eq!((page.revision, page.published_revision), (1, None));
+}
+
+#[tokio::test]
+async fn forced_pull_repairs_malformed_exports_and_never_reads_pages() {
     use baddiecore::serialization::{pull, push};
     let app = setup().await;
     let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
-    let first = create_test_page(&app, "/first").await;
-    let second = create_test_page(&app, "/second").await;
     let dir = tempfile::tempdir().unwrap();
-    pull(&pool, dir.path(), true, false).unwrap();
-    let first_file = dir.path().join(format!("pages/{}.yaml", first.id));
-    let second_file = dir.path().join(format!("pages/{}.yaml", second.id));
-    edit_yaml(&first_file, |v| v["slug"] = json!("/second"));
-    let edited = std::fs::read(&first_file).unwrap();
-    assert!(pull(&pool, dir.path(), true, false).is_err());
-    assert_eq!(std::fs::read(&first_file).unwrap(), edited);
-    let before = serde_json::to_value(bootstrap(&app).await).unwrap();
-    assert!(push(&pool, dir.path(), true, false).is_err());
-    assert_eq!(serde_json::to_value(bootstrap(&app).await).unwrap(), before);
-    edit_yaml(&second_file, |v| v["slug"] = json!("/first"));
-    push(&pool, dir.path(), true, false).unwrap();
-    let pages = bootstrap(&app).await.pages;
-    assert_eq!(
-        pages.iter().find(|p| p.id == first.id).unwrap().slug,
-        "/second"
-    );
-    assert_eq!(
-        pages.iter().find(|p| p.id == second.id).unwrap().slug,
-        "/first"
-    );
-    // Missing files never delete database items.
-    std::fs::remove_file(&second_file).unwrap();
-    push(&pool, dir.path(), true, false).unwrap();
-    assert_eq!(bootstrap(&app).await.pages.len(), 3);
-    pull(&pool, dir.path(), true, true).unwrap();
-    assert_eq!(
-        call(
-            &app.app,
-            "DELETE",
-            &format!("/api/admin/pages/{}", first.id),
-            Some(&app.cookie),
-            None::<&Value>
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert!(pull(&pool, dir.path(), true, false).is_err());
-    pull(&pool, dir.path(), true, true).unwrap();
-    assert!(!first_file.exists());
-    assert!(second_file.exists());
-
-    // New definitions and pages can arrive together in an initialized instance.
-    let component_file = dir.path().join("components/git-component.yaml");
-    std::fs::copy(dir.path().join("components/text.yaml"), &component_file).unwrap();
-    edit_yaml(&component_file, |v| v["id"] = json!("git-component"));
-    let template_file = dir.path().join("templates/git-template.yaml");
-    std::fs::copy(dir.path().join("templates/homepage.yaml"), &template_file).unwrap();
-    edit_yaml(&template_file, |v| {
-        v["id"] = json!("git-template");
-        v["regions"][0]["allowed_components"] = json!(["git-component"]);
-    });
-    edit_yaml(&second_file, |v| v["template_id"] = json!("git-template"));
-    let other = setup().await;
-    let other_pool = Pool::new(Opts::from_url(&other.db.url).unwrap()).unwrap();
-    push(&other_pool, dir.path(), true, false).unwrap();
-    let imported = bootstrap(&other).await;
-    let imported_page = imported.pages.iter().find(|p| p.id == second.id).unwrap();
-    assert_eq!(imported_page.template_id, "git-template");
-    assert_eq!(imported_page.slug, "/first");
-    assert_eq!(imported_page.revision, 1);
-    assert_eq!(imported_page.published_revision, None);
-    assert!(imported.components.iter().any(|c| c.id == "git-component"));
-    assert!(imported.templates.iter().any(|t| t.id == "git-template"));
-}
-
-#[tokio::test]
-async fn forced_pull_repairs_malformed_exports_and_definition_only_pull_ignores_pages() {
-    use baddiecore::serialization::pull;
-    let app = setup().await;
-    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    pull(&pool, dir.path(), false, false).unwrap();
+    pull(&pool, dir.path(), false).unwrap();
     let hero = dir.path().join("components/hero.yaml");
     let original = std::fs::read(&hero).unwrap();
     let obsolete = dir.path().join("components/deleted.yaml");
@@ -1805,20 +1808,22 @@ async fn forced_pull_repairs_malformed_exports_and_definition_only_pull_ignores_
     std::fs::write(&hero, "invalid: [").unwrap();
     std::fs::write(&obsolete, "invalid too: [").unwrap();
     std::fs::write(&notes, "keep this").unwrap();
-    assert!(pull(&pool, dir.path(), false, false).is_err());
+    // Both are file-side changes that pull leaves for push, which rejects them.
+    let sync = pull(&pool, dir.path(), false).unwrap();
+    assert_eq!(sync.pending.len(), 2);
     assert_eq!(std::fs::read_to_string(&hero).unwrap(), "invalid: [");
-    pull(&pool, dir.path(), false, true).unwrap();
+    assert!(push(&pool, dir.path(), false, false).is_err());
+    pull(&pool, dir.path(), true).unwrap();
     assert_eq!(std::fs::read(&hero).unwrap(), original);
     assert!(!obsolete.exists());
     assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep this");
     assert!(!dir.path().join("pages").exists());
-    // This would fail if the definition-only command still deserialized pages.
+    // This would fail if pull still deserialized pages.
     pool.get_conn()
         .unwrap()
         .query_drop("UPDATE pages SET data='not json'")
         .unwrap();
-    pull(&pool, dir.path(), false, true).unwrap();
-    assert!(pull(&pool, dir.path(), true, true).is_err());
+    pull(&pool, dir.path(), true).unwrap();
 }
 
 #[tokio::test]
@@ -2783,4 +2788,464 @@ async fn headless_registration_validates_ids_schemas_and_protects_builtin_compon
         .status(),
         StatusCode::CREATED
     );
+}
+
+async fn raw_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    body: Vec<u8>,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "example.test")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/zip")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+fn package_names(package: &[u8]) -> Vec<String> {
+    let archive = zip::ZipArchive::new(std::io::Cursor::new(package)).unwrap();
+    let mut names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+async fn export_package(app: &TestApp, path: &str) -> Vec<u8> {
+    let response = call(
+        &app.app,
+        "GET",
+        &format!("/api/admin/package?path={path}"),
+        Some(&app.cookie),
+        None::<&Value>,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zip");
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+
+#[tokio::test]
+async fn packages_move_page_branches_between_installations_as_drafts() {
+    let source = setup().await;
+    let template: Value = read(
+        call(
+            &source.app,
+            "POST",
+            "/api/admin/templates",
+            Some(&source.cookie),
+            Some(&json!({"name":"Article","description":"","regions":[
+                {"name":"main","allowed_components":["text"],"max_components":5}]})),
+        )
+        .await,
+    )
+    .await;
+    let template_id = template["id"].as_str().unwrap().to_owned();
+    let response = call(
+        &source.app,
+        "POST",
+        "/api/admin/pages",
+        Some(&source.cookie),
+        Some(&json!({"title":"News","slug":"/news","template_id":template_id})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let news: Page = read(response).await;
+    let story = create_test_page(&source, "/news/story").await;
+    create_test_page(&source, "/newspaper").await;
+    // Definitions already on the target belong to Git and must not be overwritten.
+    let mut homepage = bootstrap(&source)
+        .await
+        .templates
+        .into_iter()
+        .find(|t| t.id == "homepage")
+        .unwrap();
+    homepage.description = "Changed only on the source".into();
+    let response = call(
+        &source.app,
+        "PUT",
+        "/api/admin/templates/homepage",
+        Some(&source.cookie),
+        Some(&homepage),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let package = export_package(&source, "/news").await;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package.clone())).unwrap();
+    let names = package_names(&package);
+    assert!(names.contains(&format!("pages/{}.yaml", news.id)));
+    assert!(names.contains(&format!("pages/{}.yaml", story.id)));
+    assert!(names.contains(&format!("templates/{template_id}.yaml")));
+    assert!(names.contains(&"components/text.yaml".to_owned()));
+    assert_eq!(names.iter().filter(|n| n.starts_with("pages/")).count(), 2);
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name(&format!("pages/{}.yaml", news.id)).unwrap(),
+        &mut text,
+    )
+    .unwrap();
+    assert!(text.contains("slug: /news") && !text.contains("revision"));
+
+    let target = setup().await;
+    let original = bootstrap(&target).await;
+    // A different page already owns one of the paths: nothing is installed.
+    let blocker = create_test_page(&target, "/news/story").await;
+    let before = serde_json::to_value(bootstrap(&target).await).unwrap();
+    let response = raw_call(
+        &target.app,
+        "POST",
+        "/api/admin/package",
+        &target.cookie,
+        package.clone(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        serde_json::to_value(bootstrap(&target).await).unwrap(),
+        before
+    );
+    let response = call(
+        &target.app,
+        "DELETE",
+        &format!("/api/admin/pages/{}", blocker.id),
+        Some(&target.cookie),
+        None::<&Value>,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = raw_call(
+        &target.app,
+        "POST",
+        "/api/admin/package",
+        &target.cookie,
+        package.clone(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = read(response).await;
+    assert_eq!(result["created"], json!(["/news", "/news/story"]));
+    assert_eq!(result["templates_added"], 1);
+    assert_eq!(result["components_added"], 0);
+    let installed = bootstrap(&target).await;
+    let page = installed.pages.iter().find(|p| p.id == news.id).unwrap();
+    assert_eq!((page.revision, page.published_revision), (1, None));
+    assert_eq!(page.template_id, template_id);
+    assert_eq!(installed.templates.len(), original.templates.len() + 1);
+    assert_eq!(
+        installed
+            .templates
+            .iter()
+            .find(|t| t.id == "homepage")
+            .unwrap()
+            .description,
+        original
+            .templates
+            .iter()
+            .find(|t| t.id == "homepage")
+            .unwrap()
+            .description
+    );
+
+    // Reinstalling is idempotent; changed pages get the target's next revision.
+    let result: Value = read(
+        raw_call(
+            &target.app,
+            "POST",
+            "/api/admin/package",
+            &target.cookie,
+            package,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(result["unchanged"], json!(["/news", "/news/story"]));
+    let mut renamed = news.clone();
+    renamed.title = "Latest news".into();
+    let response = call(
+        &source.app,
+        "PUT",
+        &format!("/api/admin/pages/{}", news.id),
+        Some(&source.cookie),
+        Some(&renamed),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = read(
+        raw_call(
+            &target.app,
+            "POST",
+            "/api/admin/package",
+            &target.cookie,
+            export_package(&source, "/news").await,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(result["updated"], json!(["/news"]));
+    let page = bootstrap(&target)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == news.id)
+        .unwrap();
+    assert_eq!((page.title.as_str(), page.revision), ("Latest news", 2));
+
+    // The whole site exports from "/"; empty paths and junk uploads are rejected.
+    let site = export_package(&source, "/").await;
+    assert_eq!(
+        package_names(&site)
+            .iter()
+            .filter(|n| n.starts_with("pages/"))
+            .count(),
+        4
+    );
+    for (method, uri, body) in [
+        ("GET", "/api/admin/package?path=/missing", Vec::new()),
+        ("POST", "/api/admin/package", b"not a zip".to_vec()),
+    ] {
+        let response = raw_call(&target.app, method, uri, &target.cookie, body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn packages_are_admin_only() {
+    let app = setup().await;
+    members(&app).await;
+    let package = export_package(&app, "/").await;
+    let members = member_app(&app);
+    for cookie in ["editor", "reviewer"] {
+        let response = raw_call(
+            &members,
+            "GET",
+            "/api/admin/package?path=/",
+            cookie,
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = raw_call(
+            &members,
+            "POST",
+            "/api/admin/package",
+            cookie,
+            package.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let response = raw_call(&members, "POST", "/api/admin/package", "admin", package).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+async fn send(app: &TestApp, method: &str, uri: &str, body: Option<&Value>) -> StatusCode {
+    call(&app.app, method, uri, Some(&app.cookie), body)
+        .await
+        .status()
+}
+
+async fn template(app: &TestApp, id: &str) -> Option<baddiecore::Template> {
+    bootstrap(app)
+        .await
+        .templates
+        .into_iter()
+        .find(|t| t.id == id)
+}
+
+#[tokio::test]
+async fn deletions_travel_through_git_without_resurrection_or_lost_work() {
+    use baddiecore::serialization::{Side, pull, push, status};
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    let pool = |app: &TestApp| Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let (alice, bob, prod) = (setup().await, setup().await, setup().await);
+    let (alice_db, bob_db, prod_db) = (pool(&alice), pool(&bob), pool(&prod));
+    // Pushing requires an export directory that tracks the group.
+    assert!(push(&bob_db, dir, false, false).is_err());
+
+    let article: Value = read(
+        call(
+            &alice.app,
+            "POST",
+            "/api/admin/templates",
+            Some(&alice.cookie),
+            Some(&json!({"name":"Article","description":"","regions":[
+                {"name":"main","allowed_components":["text"],"max_components":5}]})),
+        )
+        .await,
+    )
+    .await;
+    let article = article["id"].as_str().unwrap().to_owned();
+    let article_file = dir.join(format!("templates/{article}.yaml"));
+    pull(&alice_db, dir, false).unwrap();
+    assert!(article_file.exists() && dir.join("baddiecore.yaml").exists());
+    for db in [&bob_db, &prod_db] {
+        let sync = push(db, dir, false, false).unwrap();
+        assert_eq!(sync.applied.len(), 1, "{:?}", sync.applied);
+        assert_eq!(sync.applied[0].action, "added");
+    }
+
+    // Alice deletes the template in her CMS; pull deletes its file.
+    let uri = format!("/api/admin/templates/{article}");
+    assert_eq!(
+        send(&alice, "DELETE", &uri, None).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&alice, "DELETE", &uri, None).await,
+        StatusCode::NOT_FOUND
+    );
+    let sync = pull(&alice_db, dir, false).unwrap();
+    assert_eq!(sync.applied[0].action, "deleted");
+    assert!(!article_file.exists());
+
+    // Bob sees an incoming deletion. Pulling first must not export the template back.
+    let changes = status(&bob_db, dir).unwrap();
+    assert_eq!(
+        (changes[0].side, changes[0].action),
+        (Side::Files, "deleted")
+    );
+    let sync = pull(&bob_db, dir, false).unwrap();
+    assert!(sync.applied.is_empty() && !article_file.exists());
+    push(&bob_db, dir, false, false).unwrap();
+    assert!(template(&bob, &article).await.is_none());
+    assert!(status(&bob_db, dir).unwrap().is_empty());
+
+    // Work that exists only in Bob's database survives his push, waiting for his pull.
+    let landing: Value = read(
+        call(
+            &bob.app,
+            "POST",
+            "/api/admin/templates",
+            Some(&bob.cookie),
+            Some(&json!({"name":"Landing","description":"","regions":[
+                {"name":"main","allowed_components":["hero"],"max_components":5}]})),
+        )
+        .await,
+    )
+    .await;
+    let landing = landing["id"].as_str().unwrap().to_owned();
+    let sync = push(&bob_db, dir, false, false).unwrap();
+    assert_eq!(sync.pending.len(), 1);
+    assert_eq!(sync.pending[0].side, Side::Database);
+    assert!(template(&bob, &landing).await.is_some());
+
+    // A template still used by pages is not deleted; the push changes nothing.
+    let response = call(
+        &prod.app,
+        "POST",
+        "/api/admin/pages",
+        Some(&prod.cookie),
+        Some(&json!({"title":"News","slug":"/news","template_id":article})),
+    )
+    .await;
+    let news: Page = read(response).await;
+    let error = push(&prod_db, dir, false, false).unwrap_err();
+    assert!(error.0.contains("still used by page /news"), "{error}");
+    assert!(template(&prod, &article).await.is_some());
+    let uri = format!("/api/admin/pages/{}", news.id);
+    assert_eq!(
+        send(&prod, "DELETE", &uri, None).await,
+        StatusCode::NO_CONTENT
+    );
+    push(&prod_db, dir, false, false).unwrap();
+    assert!(template(&prod, &article).await.is_none());
+
+    // Components in use by templates or pages cannot be deleted through the API either.
+    assert_eq!(
+        send(&alice, "DELETE", "/api/admin/components/cards", None).await,
+        StatusCode::CONFLICT
+    );
+    let mut homepage = template(&alice, "homepage").await.unwrap();
+    homepage.regions[0]
+        .allowed_components
+        .retain(|c| c != "cards");
+    homepage.description = "Without cards".into();
+    let body = serde_json::to_value(&homepage).unwrap();
+    assert_eq!(
+        send(&alice, "PUT", "/api/admin/templates/homepage", Some(&body)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&alice, "DELETE", "/api/admin/components/cards", None).await,
+        StatusCode::NO_CONTENT
+    );
+    pull(&alice_db, dir, false).unwrap();
+    assert!(!dir.join("components/cards.yaml").exists());
+
+    // Bob also edited the homepage, so it conflicts; neither command guesses.
+    let mut mine = template(&bob, "homepage").await.unwrap();
+    mine.description = "Bob's version".into();
+    let body = serde_json::to_value(&mine).unwrap();
+    send(&bob, "PUT", "/api/admin/templates/homepage", Some(&body)).await;
+    let before = std::fs::read(dir.join("templates/homepage.yaml")).unwrap();
+    assert!(push(&bob_db, dir, false, false).is_err());
+    assert!(pull(&bob_db, dir, false).is_err());
+    assert_eq!(
+        std::fs::read(dir.join("templates/homepage.yaml")).unwrap(),
+        before
+    );
+    assert!(
+        bootstrap(&bob)
+            .await
+            .components
+            .iter()
+            .any(|c| c.id == "cards")
+    );
+    // Forcing makes Bob's database mirror the files, discarding his homepage edit and his
+    // unpulled template. A dry run shows that first.
+    let sync = push(&bob_db, dir, true, true).unwrap();
+    assert!(
+        sync.applied
+            .iter()
+            .any(|c| c.action == "deleted" && c.path.contains(&landing))
+    );
+    let sync = push(&bob_db, dir, true, false).unwrap();
+    assert!(sync.pending.is_empty());
+    assert!(template(&bob, &landing).await.is_none());
+    assert_eq!(
+        template(&bob, "homepage").await.unwrap().description,
+        "Without cards"
+    );
+    assert!(
+        !bootstrap(&bob)
+            .await
+            .components
+            .iter()
+            .any(|c| c.id == "cards")
+    );
+
+    // A new developer's seeded starter items follow the repository instead of returning.
+    let carol = setup().await;
+    let carol_db = pool(&carol);
+    pull(&carol_db, dir, false).unwrap();
+    assert!(!dir.join("components/cards.yaml").exists());
+    push(&carol_db, dir, false, false).unwrap();
+    assert!(
+        !bootstrap(&carol)
+            .await
+            .components
+            .iter()
+            .any(|c| c.id == "cards")
+    );
+    assert!(status(&carol_db, dir).unwrap().is_empty());
 }

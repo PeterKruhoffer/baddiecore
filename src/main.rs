@@ -6,7 +6,10 @@ use mysql::{Opts, Pool};
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "pull" || a == "push") {
+    if args
+        .first()
+        .is_some_and(|a| a == "pull" || a == "push" || a == "status")
+    {
         serialization_cli(&args);
         return;
     }
@@ -63,13 +66,11 @@ async fn main() {
 fn serialization_cli(args: &[String]) {
     let command = &args[0];
     let mut directory = None;
-    let mut pages = false;
     let mut force = false;
     let mut dry_run = false;
     for arg in &args[1..] {
         match arg.as_str() {
-            "--pages" => pages = true,
-            "--force" if command == "pull" => force = true,
+            "--force" if command != "status" => force = true,
             "--dry-run" if command == "push" => dry_run = true,
             "-h" | "--help" => {
                 print_serialization_help();
@@ -85,30 +86,108 @@ fn serialization_cli(args: &[String]) {
     let opts =
         Opts::from_url(&url).unwrap_or_else(|_| cli_fail("DATABASE_URL must be a MySQL URL"));
     let pool = Pool::new(opts).unwrap_or_else(|_| cli_fail("could not connect to MySQL"));
+    if command == "status" {
+        match serialization::status(&pool, directory) {
+            Ok(changes) => print_status(&changes),
+            Err(e) => cli_fail(&format!("status failed: {e}")),
+        }
+        return;
+    }
     let result = if command == "pull" {
-        serialization::pull(&pool, directory, pages, force)
+        serialization::pull(&pool, directory, force)
     } else {
-        serialization::push(&pool, directory, pages, dry_run)
+        serialization::push(&pool, directory, force, dry_run)
     };
-    match result {
-        Ok(c) => println!(
-            "{} components, {} templates, {} pages{}",
-            c.components,
-            c.templates,
-            c.pages,
+    let sync = result.unwrap_or_else(|e| cli_fail(&format!("{command} failed: {e}")));
+    let target = if command == "pull" {
+        "the files"
+    } else {
+        "the database"
+    };
+    match sync.applied.len() {
+        0 => println!("{command}: nothing to change in {target}"),
+        n => println!(
+            "{command}: {n} change{} {} {target}",
+            if n == 1 { "" } else { "s" },
             if dry_run {
-                " (dry run; no changes committed)"
+                "would be applied to"
             } else {
-                ""
+                "applied to"
             }
         ),
-        Err(e) => cli_fail(&format!("{command} failed: {e}")),
+    }
+    print_changes(&sync.applied);
+    if !sync.pending.is_empty() {
+        let (other, opposite) = if command == "pull" {
+            ("the database", "push")
+        } else {
+            ("the files", "pull")
+        };
+        println!(
+            "{} change{} only in {other}; run {opposite} to copy {}:",
+            sync.pending.len(),
+            if sync.pending.len() == 1 { "" } else { "s" },
+            if sync.pending.len() == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        );
+        print_changes(&sync.pending);
+    }
+}
+
+fn print_changes(changes: &[serialization::Change]) {
+    for change in changes {
+        println!("  {:<9} {}", change.action, change.path);
+    }
+}
+
+fn print_status(changes: &[serialization::Change]) {
+    use serialization::Side;
+    if changes.is_empty() {
+        println!("The database and the files are in sync.");
+    }
+    for (side, heading) in [
+        (
+            Side::Database,
+            "Changed in the database; pull to copy them to the files:",
+        ),
+        (
+            Side::Files,
+            "Changed in the files; push to copy them to the database:",
+        ),
+        (
+            Side::Both,
+            "Changed in both; choose with pull --force (keep database) or push --force (keep files):",
+        ),
+    ] {
+        let group: Vec<_> = changes.iter().filter(|c| c.side == side).cloned().collect();
+        if !group.is_empty() {
+            println!("{heading}");
+            print_changes(&group);
+        }
     }
 }
 
 fn print_serialization_help() {
     println!(
-        "baddiecore pull [directory] [--pages] [--force]\n  Export components and templates. Pages are opt-in. Refuses changed files unless --force.\n\nbaddiecore push [directory] [--pages] [--dry-run]\n  Transactionally merge files without deleting or publishing. --dry-run validates and rolls back.\n\nDirectory defaults to baddiecore-content. DATABASE_URL must identify a directly accessible MySQL database."
+        "baddiecore status [directory]
+  Show which components and templates changed in the database and in the files since the
+  last pull or push.
+
+baddiecore pull [directory] [--force]
+  Copy database changes, including deletions, into the files. --force makes the files
+  mirror the database, discarding file changes that were not pushed.
+
+baddiecore push [directory] [--force] [--dry-run]
+  Copy file changes, including deletions, into the database in one transaction. --force
+  makes the database mirror the files, discarding database changes that were not pulled.
+  --dry-run validates and rolls back.
+
+Both stop when an item changed on both sides, until you choose a side with --force.
+Content pages are not synced; move them with packages in the admin UI. Directory defaults
+to baddiecore-content. DATABASE_URL must identify a directly accessible MySQL database."
     );
 }
 

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Run the content CLI inside the CMS container against a host directory, so templates and
+# components can be pulled into Git without a local Rust toolchain.
+#   scripts/content status
+#   scripts/content pull [--force]
+#   scripts/content push [--force] [--dry-run]
+# BADDIE_CONTENT_DIR selects the directory, relative to the repository (default: baddiecore-content).
+set -eu
+cd "$(dirname "$0")/.."
+dir=${BADDIE_CONTENT_DIR:-baddiecore-content}
+mkdir -p "$dir"
+exec docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+  --volume "$(cd "$dir" && pwd):/content" cms baddiecore "$@" /content

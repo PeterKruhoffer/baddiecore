@@ -3,6 +3,7 @@ import type {
   ComponentDef,
   Content,
   Organization,
+  PackageResult,
   Page,
   Review,
   Template,
@@ -15,19 +16,20 @@ export class ApiError extends Error {
     super(message);
   }
 }
+async function failure(response: Response) {
+  let message = `Request failed (${response.status})`;
+  try {
+    message = (await response.json()).error || message;
+  } catch {}
+  return new ApiError(message, response.status);
+}
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try {
-      message = (await response.json()).error || message;
-    } catch {}
-    throw new ApiError(message, response.status);
-  }
+  if (!response.ok) throw await failure(response);
   return response.status === 204 ? (undefined as T) : response.json();
 }
 export const api = {
@@ -88,10 +90,29 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(value),
     }),
+  deleteTemplate: (id: string) =>
+    request<void>(`/api/admin/templates/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  deleteComponent: (id: string) =>
+    request<void>(`/api/admin/components/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createComponent: (value: Omit<ComponentDef, "id">) =>
     request<ComponentDef>("/api/admin/components", {
       method: "POST",
       body: JSON.stringify(value),
+    }),
+  exportPackage: async (path: string) => {
+    const response = await fetch(`/api/admin/package?path=${encodeURIComponent(path)}`, {
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw await failure(response);
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "baddiecore-package.zip";
+    return { blob: await response.blob(), filename };
+  },
+  installPackage: (file: Blob) =>
+    request<PackageResult>("/api/admin/package", {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
     }),
   updateComponent: (value: ComponentDef) =>
     request<ComponentDef>(`/api/admin/components/${value.id}`, {

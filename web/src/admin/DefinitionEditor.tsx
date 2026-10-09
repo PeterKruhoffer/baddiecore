@@ -107,6 +107,7 @@ type Props = {
   templates: Template[];
   components: ComponentDef[];
   onSave: (value: Template | ComponentDef, isNew: boolean) => Promise<Template | ComponentDef>;
+  onDelete: (id: string) => Promise<void>;
   onDirty: (dirty: boolean) => void;
 };
 const blankTemplate = (): Template => ({
@@ -177,6 +178,23 @@ export function DefinitionEditor(p: Props) {
       setBusy(false);
     }
   }
+  async function remove() {
+    const kind = p.kind === "templates" ? "template" : "component";
+    if (busy() || !confirm(`Delete the ${kind} ${draft().name}? Pages already published keep it.`))
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await p.onDelete(selected());
+      setSelected("");
+      setDraft(p.kind === "templates" ? blankTemplate() : blankComponent());
+      markDirty(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete");
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <section {...stylex.attrs(styles.definition)}>
       <header {...stylex.attrs(styles.header)}>
@@ -199,6 +217,15 @@ export function DefinitionEditor(p: Props) {
           >
             Cancel changes
           </button>
+          <Show when={selected()}>
+            <button
+              {...stylex.attrs(common.button, common.danger)}
+              disabled={busy()}
+              onClick={() => void remove()}
+            >
+              Delete
+            </button>
+          </Show>
           <button {...stylex.attrs(common.button)} disabled={busy()} onClick={() => choose("")}>
             New {p.kind === "templates" ? "template" : "component"}
           </button>

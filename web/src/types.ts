@@ -81,3 +81,10 @@ export interface Review {
   feedback: string;
   reviewed_by: string | null;
 }
+export interface PackageResult {
+  created: string[];
+  updated: string[];
+  unchanged: string[];
+  components_added: number;
+  templates_added: number;
+}
