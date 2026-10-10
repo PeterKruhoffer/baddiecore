@@ -32,17 +32,19 @@ const paths = (value: FormDataEntryValue | null) =>
     .filter(Boolean);
 
 export function OrganizationEditor(p: {
+  passwords: boolean;
   onDirty: (value: boolean) => void;
   onRefresh: () => Promise<void>;
 }) {
   const request = createRequest(api.organization);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
-  async function save(org: Organization) {
+  async function save(org: Organization, after?: () => Promise<void>) {
     setBusy(true);
     setError("");
     try {
       await api.saveOrganization(org);
+      await after?.();
       p.onDirty(false);
       await request.refetch();
       await p.onRefresh();
@@ -71,10 +73,14 @@ export function OrganizationEditor(p: {
             paths: paths(data.get("paths")),
             groups: data.getAll("groups").map(String),
           };
-          void save({
-            ...org,
-            members: [...org.members.filter((m) => m.id !== member?.id), next],
-          }).then((saved) => {
+          const password = String(data.get("password") || "");
+          void save(
+            {
+              ...org,
+              members: [...org.members.filter((m) => m.id !== member?.id), next],
+            },
+            password ? () => api.setMemberPassword(next.id, password) : undefined,
+          ).then((saved) => {
             if (saved && !member) form.reset();
           });
         }}
@@ -82,7 +88,7 @@ export function OrganizationEditor(p: {
         <h3>{member ? member.name : "Add member"}</h3>
         <div {...stylex.attrs(styles.row)}>
           <label {...stylex.attrs(common.label)}>
-            Provider user ID
+            {p.passwords ? "Username" : "Provider user ID"}
             <input
               {...stylex.attrs(common.control)}
               name="id"
@@ -100,6 +106,19 @@ export function OrganizationEditor(p: {
               value={member?.name || ""}
             />
           </label>
+          <Show when={p.passwords}>
+            <label {...stylex.attrs(common.label)}>
+              {member ? "New password (optional)" : "Password"}
+              <input
+                {...stylex.attrs(common.control)}
+                name="password"
+                type="password"
+                autocomplete="new-password"
+                minlength={8}
+                required={!member}
+              />
+            </label>
+          </Show>
           <label {...stylex.attrs(common.label)}>
             Role
             <select {...stylex.attrs(common.control)} name="role" value={member?.role || "editor"}>
@@ -224,8 +243,8 @@ export function OrganizationEditor(p: {
     <section {...stylex.attrs(styles.layout)}>
       <h1>Organization</h1>
       <p>
-        One CMS installation is one organization. Add existing provider user IDs, not email
-        addresses. Unknown users have no access. This does not invite or change users at WorkOS.
+        One CMS installation is one organization. Members sign in with their username. Setting a
+        password signs that member out everywhere. Removing a member deletes their password.
       </p>
       <p>
         Administrators have full access. Reviewers edit all pages and approve submissions. Editors

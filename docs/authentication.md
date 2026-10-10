@@ -2,47 +2,41 @@
 
 [Back to README](../README.md)
 
-`BADDIE_AUTH=password` is the default and requires a nonempty `BADDIE_ADMIN_PASSWORD`. It makes no WorkOS requests and needs no WorkOS account. Unknown methods or missing required configuration stop startup. There is no unauthenticated editor mode and no fallback between methods.
+Baddiecore signs editors in with local accounts. It needs no external identity service. Each organization member signs in with their username (the member ID) and a password. Passwords are stored as Argon2id hashes in MySQL, and sessions are stored there too. Roles and path grants come from the local organization. See [membership and review](editing.md#membership-and-review).
 
-## Use WorkOS AuthKit
+## First administrator
 
-To opt into [WorkOS AuthKit](https://workos.com/docs/authkit), set these variables on the server or in your Compose `.env`:
+On startup, if no administrator has a password, `BADDIE_ADMIN_PASSWORD` creates the `admin` account, or repairs its administrator role and password. Sign in as `admin`, then add members under Organization. Once an administrator can sign in, the variable is ignored, so changing it later does not change any password. You can remove it after the first sign-in. If no administrator can sign in and the variable is empty, startup stops with an error.
 
-```dotenv
-BADDIE_AUTH=workos
-BADDIE_SECURE_COOKIE=true
-WORKOS_API_KEY=<your-server-side-api-key>
-WORKOS_CLIENT_ID=<your-client-id>
-WORKOS_ORGANIZATION_ID=<your-editors-organization-id>
-WORKOS_REDIRECT_URI=https://cms.example.com/api/auth/callback
+## Members and passwords
+
+Administrators add members under Organization and give each one a username, display name, role and initial password. They can set a new password for any member later; this ends that member's sessions. Members change their own password under Account, which needs their current password and signs them out on other devices. Removing a member deletes their password and ends their sessions immediately. Passwords need at least 8 characters. There is no email, invitation or self-service reset flow; an administrator sets the new password.
+
+After 5 failed sign-ins for one username within 15 minutes, further attempts for that username return 429 until the window passes. This limits guessing, but it is not a substitute for per-client rate limiting of `/api/login` at the reverse proxy.
+
+## Recover administrator access
+
+Run the CLI against the same database:
+
+```sh
+docker compose exec cms baddiecore reset-admin <username>
 ```
 
-Use your own WorkOS environment for each independently operated installation. Keep the API key in secret storage, never in frontend variables or source control. Password configuration is unused in WorkOS mode and can be removed.
+It prompts for a password, or reads one line from stdin when stdin is not a terminal. It makes `<username>` an administrator, adding the member if needed, sets the password and ends that account's sessions. The server does not need restarting. Database access is trusted operator access.
 
-In the WorkOS dashboard, enable hosted AuthKit, register the exact callback URL above and allow `https://cms.example.com/admin` as a logout redirect. Create a dedicated organization for this CMS's editors and invite them into it. Disable public sign-ups and automatic organization enrollment if access must be invitation-only. Authentication into this organization does not grant CMS access by itself. Add the user's stable WorkOS user ID to the CMS's local Organization screen. WorkOS roles do not control local permissions. A WorkOS account outside the configured organization grants no access. See [membership and review](editing.md#membership-and-review) for local roles and grants.
+## Sessions
 
-### Bootstrap and recover administrator access
-
-One CMS installation is one organization. On the first startup with local membership support, `BADDIE_BOOTSTRAP_ADMIN_ID=<stable-provider-user-id>` creates that local administrator. Remove the variable afterward. It applies only when the organization record is first created; restarting never restores a removed member or overwrites local membership. Unknown WorkOS and custom-provider IDs are denied by default, including an ID named `shared-admin`.
-
-For an existing installation or recovery, temporarily restart the server with `BADDIE_AUTH=password` and a securely configured `BADDIE_ADMIN_PASSWORD`. The password session is a recovery administrator independent of local membership. Use Organization to add or repair administrator memberships, then restore WorkOS configuration and restart. Password login is deliberately not available alongside WorkOS. Keep password recovery restricted to the operator; all password users have full access. No external WorkOS mutation is required.
-
-### Sessions and local development
-
-Editors use the hosted sign-in page and return to `/admin`. The server checks single-use browser state and PKCE, exchanges the code, and stores tokens in memory. The browser receives only an opaque HttpOnly session cookie. WorkOS sessions refresh on the next admin request after at most five minutes, or earlier if the access token expires. WorkOS revocation and WorkOS organization changes take effect on refresh; local CMS membership changes take effect on the next operation. Refresh failures deny access and discard the local session. Sign-out clears the local session and redirects the browser to WorkOS to end its session too. Run one replica; restarting ends local sessions.
-
-For local development, use a WorkOS staging environment and an HTTP loopback callback, with `BADDIE_SECURE_COOKIE=false`. When using the Vite dev server, register its browser-facing origin with `/api/auth/callback`, not the backend's port. Production callbacks require HTTPS and secure cookies. Configure the reverse proxy to omit query strings on `/api/auth/callback` from access logs because callbacks contain authorization codes.
-
-The [Railway configuration](deployment.md#deploy-to-railway) defaults to password auth. To opt in before applying it, replace its `BADDIE_ADMIN_PASSWORD` environment mapping with `BADDIE_AUTH: "workos"` and mappings from `ctx.shared` for the four `WORKOS_*` variables above. Set those shared variables in the selected Railway environment. Leave `BADDIE_SECURE_COOKIE: "true"`. Review the configuration plan before applying it.
+Signing in sets an opaque HttpOnly, SameSite=Strict cookie. The database stores only a SHA-256 digest of the token. Sessions expire 12 hours after sign-in and survive server restarts and redeploys. Sign-out deletes the session. Set `BADDIE_SECURE_COOKIE=true` behind HTTPS. Local development over HTTP uses `BADDIE_SECURE_COOKIE=false`.
 
 ## Supply your own authentication
 
-Implement `auth::AuthProvider` and pass `Arc::new(your_provider)` to `AppState::open_with_auth` in `src/main.rs`. No content handlers need changing. This is a Rust source extension, not a runtime plugin or a `BADDIE_AUTH=custom` option.
+To use an identity provider such as OIDC, SAML, or a reverse proxy that authenticates users, implement `auth::AuthProvider` and pass `Arc::new(your_provider)` to `AppState::open_with_auth` in `src/main.rs`. No content handlers need changing. This is a Rust source extension, not a runtime plugin.
 
-- `authorize(&HeaderMap)` returns an `Editor { id }` after validating identity. Use a stable provider ID, not email. Return 401 for absent or invalid credentials. The CMS resolves local membership inside each content transaction and returns 403 for unknown identities. CMS middleware puts the identity in request extensions and preserves its same-origin mutation checks. The optional `recovery_admin` trait method defaults to false; override it only for a trusted operator recovery mechanism, never based on an untrusted role or ID header.
-- `routes()` returns a state-bound Axum `Router` for login, logout and callbacks. Match the frontend contract in [CONTRACT.md](../CONTRACT.md). Redirect-based providers can reuse the existing login UI through `GET /api/auth/config`.
+- `authorize(&HeaderMap)` returns an `Editor { id }` after validating identity. Use a stable provider ID, not email. Return 401 for absent or invalid credentials. The CMS resolves local membership inside each content transaction and returns 403 for unknown identities. CMS middleware puts the identity in request extensions and preserves its same-origin mutation checks.
+- `routes()` returns a state-bound Axum `Router` for login, logout and callbacks. Match the frontend contract in [CONTRACT.md](../CONTRACT.md). Redirect-based providers can reuse the existing login UI by returning `{"method": "redirect", "label": "..."}` from `GET /api/auth/config` and starting sign-in at `GET /api/login`. Logout may return `{"redirect_url": "..."}` to end a hosted session.
 - Your provider owns session expiry, revocation, CSRF protection for its routes, and secure credential storage. If using proxy identity headers, block direct backend access and make the trusted proxy strip client-supplied identity headers before setting its own.
+- Add members under Organization using the provider's user IDs. To create the first administrator, run `baddiecore reset-admin <provider-user-id>`. The password it sets is unused by your provider.
 
-CMS routes use `AuthProvider::origin_policy`, which defaults to `BADDIE_ORIGIN` and `BADDIE_SECURE_COOKIE`. Override it with `OriginPolicy::new` for configuration supplied in Rust. Built-in providers use the same policy for their own routes and CMS mutations.
+CMS routes use `AuthProvider::origin_policy`, which defaults to `BADDIE_ORIGIN` and `BADDIE_SECURE_COOKIE`. Override it with `OriginPolicy::new` for configuration supplied in Rust.
 
-The built-in implementations live in `src/auth.rs` and `src/auth/workos.rs`. Auth tests use a local mock WorkOS endpoint and do not need credentials. A real staging-environment sign-in and sign-out should still be checked before enabling WorkOS in production.
+The built-in implementation lives in `src/auth.rs`.

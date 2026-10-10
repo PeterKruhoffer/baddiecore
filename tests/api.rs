@@ -61,7 +61,7 @@ async fn spa_routes_serve_html_with_success_status() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "<html>CMS</html>").unwrap();
     let app = router(
-        AppState::open(&db.url, "secret".into(), false).unwrap(),
+        AppState::open(&db.url, Some(PASSWORD.into()), false).unwrap(),
         dir.path(),
     );
     for path in ["/admin", "/about/team"] {
@@ -73,6 +73,8 @@ async fn spa_routes_serve_html_with_success_status() {
     }
 }
 
+const PASSWORD: &str = "test-password";
+
 async fn setup() -> TestApp {
     setup_with_keys(baddiecore::headless::ApiKeys::default()).await
 }
@@ -81,7 +83,7 @@ async fn setup_with_keys(keys: baddiecore::headless::ApiKeys) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let db = TestDatabase::new();
     let app = router(
-        AppState::open(&db.url, "secret".into(), false)
+        AppState::open(&db.url, Some(PASSWORD.into()), false)
             .unwrap()
             .with_headless_keys(keys),
         dir.path(),
@@ -91,7 +93,7 @@ async fn setup_with_keys(keys: baddiecore::headless::ApiKeys) -> TestApp {
         "POST",
         "/api/login",
         None,
-        Some(&json!({"password":"secret"})),
+        Some(&json!({"username":"admin","password":PASSWORD})),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -460,8 +462,9 @@ async fn data_and_published_content_persist_after_reopen() {
     )
     .await;
 
+    // An administrator can already sign in, so a changed bootstrap password is ignored.
     let reopened = router(
-        AppState::open(&app.db.url, "new-secret".into(), false).unwrap(),
+        AppState::open(&app.db.url, Some("changed-password".into()), false).unwrap(),
         app._dir.path(),
     );
     let public: Content = read(
@@ -481,10 +484,23 @@ async fn data_and_published_content_persist_after_reopen() {
         "POST",
         "/api/login",
         None,
-        Some(&json!({"password":"new-secret"})),
+        Some(&json!({"username":"admin","password":"changed-password"})),
     )
     .await;
-    assert_eq!(login.status(), StatusCode::NO_CONTENT);
+    assert_eq!(login.status(), StatusCode::UNAUTHORIZED);
+    // Sessions live in the database and survive restarts.
+    assert_eq!(
+        call(
+            &reopened,
+            "GET",
+            "/api/admin/bootstrap",
+            Some(&app.cookie),
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -805,7 +821,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
 async fn concurrent_instances_cannot_overwrite_a_revision() {
     let app = setup().await;
     let other = router(
-        AppState::open(&app.db.url, "secret".into(), true).unwrap(),
+        AppState::open(&app.db.url, Some(PASSWORD.into()), true).unwrap(),
         app._dir.path(),
     );
     let login = call(
@@ -813,7 +829,7 @@ async fn concurrent_instances_cannot_overwrite_a_revision() {
         "POST",
         "/api/login",
         None,
-        Some(&json!({"password":"secret"})),
+        Some(&json!({"username":"admin","password":PASSWORD})),
     )
     .await;
     let cookie = login.headers()[header::SET_COOKIE].to_str().unwrap();
@@ -852,7 +868,7 @@ async fn concurrent_instances_cannot_overwrite_a_revision() {
 #[test]
 fn failed_seed_rolls_back_all_inserts() {
     let db = TestDatabase::new();
-    drop(AppState::open(&db.url, "secret".into(), false).unwrap());
+    drop(AppState::open(&db.url, Some(PASSWORD.into()), false).unwrap());
     let pool = Pool::new(Opts::from_url(&db.url).unwrap()).unwrap();
     let mut conn = pool.get_conn().unwrap();
     for statement in [
@@ -863,7 +879,7 @@ fn failed_seed_rolls_back_all_inserts() {
     ] {
         conn.query_drop(statement).unwrap();
     }
-    assert!(AppState::open(&db.url, "secret".into(), false).is_err());
+    assert!(AppState::open(&db.url, Some(PASSWORD.into()), false).is_err());
     assert_eq!(
         conn.query_first::<i64, _>("SELECT COUNT(*) FROM components")
             .unwrap(),
@@ -1102,7 +1118,7 @@ async fn aliases_redirect_only_after_publication_and_follow_the_published_path()
     )
     .await;
     let reopened = router(
-        AppState::open(&app.db.url, "secret".into(), false).unwrap(),
+        AppState::open(&app.db.url, Some(PASSWORD.into()), false).unwrap(),
         app._dir.path(),
     );
     for path in ["/summer-sale", "/shop/campaign-2026"] {
@@ -1832,9 +1848,8 @@ async fn cms_origin_policy_uses_the_builtin_providers_transport_configuration() 
     let db = TestDatabase::new();
     let dir = tempfile::tempdir().unwrap();
     for secure in [false, true] {
-        let provider = baddiecore::auth::Auth::password("secret".into(), secure).unwrap();
         let app = router(
-            AppState::open_with_auth(&db.url, std::sync::Arc::new(provider)).unwrap(),
+            AppState::open(&db.url, Some(PASSWORD.into()), secure).unwrap(),
             dir.path(),
         );
         let login = call(
@@ -1842,7 +1857,7 @@ async fn cms_origin_policy_uses_the_builtin_providers_transport_configuration() 
             "POST",
             "/api/login",
             None,
-            Some(&json!({"password":"secret"})),
+            Some(&json!({"username":"admin","password":PASSWORD})),
         )
         .await;
         let cookie = login.headers()[header::SET_COOKIE]
@@ -1908,7 +1923,18 @@ fn member_app(app: &TestApp) -> Router {
 }
 
 async fn members(app: &TestApp) -> Value {
-    let org = json!({"revision":0,"members":[
+    let current: Value = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/admin/organization",
+            Some(&app.cookie),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    let org = json!({"revision":current["revision"],"members":[
         {"id":"admin","name":"Admin","role":"admin","paths":[],"groups":[]},
         {"id":"editor","name":"Editor","role":"editor","paths":["/other"],"groups":["news"]},
         {"id":"reviewer","name":"Reviewer","role":"reviewer","paths":[],"groups":[]}
@@ -1940,7 +1966,7 @@ async fn membership_scopes_and_admin_routes_cannot_be_bypassed() {
         .into_iter()
         .find(|p| p.id == "home")
         .unwrap();
-    for id in ["unknown", "shared-admin"] {
+    for id in ["unknown", "Admin"] {
         assert_eq!(
             call(
                 &scoped,
@@ -3249,6 +3275,275 @@ async fn deletions_travel_through_git_without_resurrection_or_lost_work() {
             .any(|c| c.id == "cards")
     );
     assert!(status(&carol_db, dir).unwrap().is_empty());
+}
+
+async fn login(app: &Router, username: &str, password: &str) -> Result<String, StatusCode> {
+    let response = call(
+        app,
+        "POST",
+        "/api/login",
+        None,
+        Some(&json!({"username":username,"password":password})),
+    )
+    .await;
+    if response.status() != StatusCode::NO_CONTENT {
+        return Err(response.status());
+    }
+    Ok(session_cookie(&response))
+}
+
+fn session_cookie(response: &axum::response::Response) -> String {
+    response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+async fn status_as(app: &Router, cookie: &str) -> StatusCode {
+    call(
+        app,
+        "GET",
+        "/api/admin/bootstrap",
+        Some(cookie),
+        None::<&Value>,
+    )
+    .await
+    .status()
+}
+
+#[tokio::test]
+async fn local_accounts_sign_in_change_passwords_and_end_sessions() {
+    let app = setup().await;
+    let org = members(&app).await;
+    for (username, password) in [("admin", "wrong-password"), ("nobody", PASSWORD)] {
+        assert_eq!(
+            login(&app.app, username, password).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+    // Members without a password cannot sign in until an administrator sets one.
+    assert_eq!(
+        login(&app.app, "editor", "editor-password").await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+    let set = |id: &str, password: &str| {
+        let uri = format!("/api/admin/members/{id}/password");
+        let body = json!({ "password": password });
+        let app = &app;
+        async move { send(app, "PUT", &uri, Some(&body)).await }
+    };
+    assert_eq!(set("editor", "short").await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        set("missing", "editor-password").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        set("editor", "editor-password").await,
+        StatusCode::NO_CONTENT
+    );
+    let editor = login(&app.app, "editor", "editor-password").await.unwrap();
+    let access: Value = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/admin/bootstrap",
+            Some(&editor),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(access["access"]["id"], "editor");
+    assert_eq!(access["access"]["role"], "editor");
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/members/admin/password",
+            Some(&editor),
+            Some(&json!({"password":"taken-over"})),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    // Changing your own password needs the current one and ends other sessions.
+    let other_editor = login(&app.app, "editor", "editor-password").await.unwrap();
+    let change = |current: &str| {
+        let body = json!({"current_password": current, "password": "editor-password-2"});
+        let app = &app.app;
+        let editor = editor.clone();
+        async move {
+            call(
+                app,
+                "POST",
+                "/api/account/password",
+                Some(&editor),
+                Some(&body),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        change("wrong-password").await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let changed = change("editor-password").await;
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+    let editor = session_cookie(&changed);
+    assert_eq!(
+        status_as(&app.app, &other_editor).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(status_as(&app.app, &editor).await, StatusCode::OK);
+    assert!(login(&app.app, "editor", "editor-password").await.is_err());
+
+    // An administrator reset ends the member's sessions.
+    assert_eq!(
+        set("editor", "editor-password-3").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(status_as(&app.app, &editor).await, StatusCode::UNAUTHORIZED);
+    let editor = login(&app.app, "editor", "editor-password-3")
+        .await
+        .unwrap();
+
+    // Expired sessions are rejected.
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    pool.get_conn()
+        .unwrap()
+        .exec_drop(
+            "UPDATE sessions SET expires_at=0 WHERE account_id=?",
+            ("editor",),
+        )
+        .unwrap();
+    assert_eq!(status_as(&app.app, &editor).await, StatusCode::UNAUTHORIZED);
+    let editor = login(&app.app, "editor", "editor-password-3")
+        .await
+        .unwrap();
+
+    // Removing a member deletes their password and sessions.
+    let mut without_editor = org.clone();
+    without_editor["members"] = json!(
+        org["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["id"] != "editor")
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/api/admin/organization",
+            Some(&without_editor)
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(status_as(&app.app, &editor).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        login(&app.app, "editor", "editor-password-3").await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+
+    let logout = call(
+        &app.app,
+        "POST",
+        "/api/logout",
+        Some(&app.cookie),
+        None::<&Value>,
+    )
+    .await;
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        status_as(&app.app, &app.cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn failed_sign_ins_are_throttled_per_account() {
+    let app = setup().await;
+    for _ in 0..5 {
+        assert_eq!(
+            login(&app.app, "admin", "wrong-password").await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+    assert_eq!(
+        login(&app.app, "admin", PASSWORD).await,
+        Err(StatusCode::TOO_MANY_REQUESTS)
+    );
+    // Other accounts and existing sessions are unaffected.
+    assert_eq!(
+        login(&app.app, "nobody", "wrong-password").await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(status_as(&app.app, &app.cookie).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn startup_needs_an_administrator_and_reset_admin_recovers_access() {
+    let db = TestDatabase::new();
+    let dir = tempfile::tempdir().unwrap();
+    for password in [None, Some(String::new())] {
+        assert!(AppState::open(&db.url, password, false).is_err());
+    }
+    assert!(baddiecore::reset_admin(&db.url, "alice", "short").is_err());
+    baddiecore::reset_admin(&db.url, "alice", "alice-password").unwrap();
+    let app = router(AppState::open(&db.url, None, false).unwrap(), dir.path());
+    let alice = login(&app, "alice", "alice-password").await.unwrap();
+    let org: Value = read(
+        call(
+            &app,
+            "GET",
+            "/api/admin/organization",
+            Some(&alice),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(org["members"][0]["id"], "alice");
+    assert_eq!(org["members"][0]["role"], "admin");
+
+    // Recovery promotes an existing member and ends their sessions.
+    let mut demoted = org.clone();
+    demoted["members"] = json!([
+        org["members"][0],
+        {"id":"bob","name":"Bob","role":"editor","paths":[],"groups":[]}
+    ]);
+    let response = call(
+        &app,
+        "PUT",
+        "/api/admin/organization",
+        Some(&alice),
+        Some(&demoted),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    baddiecore::reset_admin(&db.url, "bob", "bob-password").unwrap();
+    baddiecore::reset_admin(&db.url, "alice", "alice-password-2").unwrap();
+    assert_eq!(status_as(&app, &alice).await, StatusCode::UNAUTHORIZED);
+    let bob = login(&app, "bob", "bob-password").await.unwrap();
+    let access: Value = read(
+        call(
+            &app,
+            "GET",
+            "/api/admin/bootstrap",
+            Some(&bob),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(access["access"]["role"], "admin");
 }
 
 #[tokio::test]

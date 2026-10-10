@@ -1,33 +1,36 @@
 //! Authentication owns login routes and editor authorization, not CMS content.
-//! Custom implementations supply `AuthProvider` to `AppState::open_with_auth`.
+//! The built-in provider signs members in with local passwords. Custom
+//! implementations supply `AuthProvider` to `AppState::open_with_auth`.
 use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
+};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode, header},
     middleware,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use reqwest::Url;
+use mysql::{Pool, PooledConn, prelude::Queryable};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
+use tokio::sync::Semaphore;
+use url::Url;
 use uuid::Uuid;
 
-use crate::{ApiError, Result};
-mod workos;
-pub use workos::WorkOs;
+use crate::{ApiError, Result, db_error};
 
 /// Authenticated identity. Local organization membership grants CMS access.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,162 +51,120 @@ pub trait AuthProvider: Send + Sync {
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         OriginPolicy::from_env(secure)
     }
-    /// Only a trusted recovery provider should override this. IDs alone never grant admin.
-    fn recovery_admin(&self, _editor: &Editor) -> bool {
-        false
-    }
 }
 
 const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
-const LOGIN_LIFETIME: Duration = Duration::from_secs(10 * 60);
-const MAX_SESSIONS: usize = 128;
-const MAX_PENDING_LOGINS: usize = 128;
+const MAX_FAILURES: u32 = 5;
+const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
+const MAX_TRACKED_FAILURES: usize = 10_000;
+const MIN_PASSWORD_CHARS: usize = 8;
+const MAX_PASSWORD_BYTES: usize = 1024;
 
+// Argon2id uses 19 MiB per hash; bound concurrent hashing memory.
+static HASHING: Semaphore = Semaphore::const_new(4);
+// Unknown usernames still pay for a verification so timing does not reveal them.
+static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_now("unknown account").unwrap());
+
+/// Local accounts: Argon2id password hashes and sessions stored in MySQL.
+/// Account IDs are organization member IDs.
 #[derive(Clone)]
 pub struct Auth {
-    method: Arc<Method>,
-    sessions: Arc<Mutex<Store<Arc<tokio::sync::Mutex<Session>>>>>,
-    pending: Arc<Mutex<Store<String>>>,
+    db: Pool,
     secure_cookie: bool,
     origin: OriginPolicy,
-}
-
-enum Method {
-    Password(String),
-    WorkOs(Box<WorkOs>),
-}
-
-struct Session {
-    editor: Editor,
-    workos: Option<workos::Session>,
-}
-
-struct Store<T> {
-    entries: HashMap<String, (Instant, T)>,
-}
-
-impl<T> Default for Store<T> {
-    fn default() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-}
-
-impl<T> Store<T> {
-    fn prune(&mut self, now: Instant) {
-        self.entries.retain(|_, (expires, _)| *expires > now);
-    }
-    fn insert(
-        &mut self,
-        key: String,
-        value: T,
-        now: Instant,
-        lifetime: Duration,
-        capacity: usize,
-    ) -> Result<()> {
-        self.prune(now);
-        if self.entries.len() >= capacity {
-            return Err(ApiError(
-                StatusCode::TOO_MANY_REQUESTS,
-                "sign-in capacity reached; retry later".into(),
-            ));
-        }
-        self.entries.insert(key, (now + lifetime, value));
-        Ok(())
-    }
-    fn remove(&mut self, key: &str) -> Option<T> {
-        self.prune(Instant::now());
-        self.entries.remove(key).map(|(_, value)| value)
-    }
+    failures: Arc<Mutex<HashMap<String, (Instant, u32)>>>,
 }
 
 impl Auth {
-    pub fn password(password: String, secure_cookie: bool) -> std::result::Result<Self, String> {
-        if password.trim().is_empty() {
-            return Err("BADDIE_ADMIN_PASSWORD must not be empty".into());
-        }
-        Self::new(Method::Password(password), secure_cookie)
-    }
-
-    pub fn workos(config: WorkOs, secure_cookie: bool) -> std::result::Result<Self, String> {
-        if config.redirect_uri.scheme() == "https" && !secure_cookie {
-            return Err("WorkOS HTTPS requires BADDIE_SECURE_COOKIE=true".into());
-        }
-        Self::new(Method::WorkOs(Box::new(config)), secure_cookie)
-    }
-
-    fn new(method: Method, secure_cookie: bool) -> std::result::Result<Self, String> {
+    pub fn new(db: Pool, secure_cookie: bool) -> std::result::Result<Self, String> {
         Ok(Self {
-            method: Arc::new(method),
-            sessions: Default::default(),
-            pending: Default::default(),
+            db,
             secure_cookie,
             origin: OriginPolicy::from_env(secure_cookie)?,
+            failures: Default::default(),
         })
     }
 
-    pub fn from_env(secure_cookie: bool) -> std::result::Result<Self, String> {
-        Self::from_config(|key| std::env::var(key).ok(), secure_cookie)
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut PooledConn) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || f(&mut db.get_conn().map_err(db_error)?))
+            .await
+            .map_err(|_| {
+                ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "database task failed".into(),
+                )
+            })?
     }
 
-    fn from_config(
-        get: impl Fn(&str) -> Option<String>,
-        secure_cookie: bool,
-    ) -> std::result::Result<Self, String> {
-        let required = |key: &str| {
-            get(key)
-                .filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| format!("{key} is required"))
-        };
-        match get("BADDIE_AUTH").as_deref().unwrap_or("password") {
-            "password" => Self::password(required("BADDIE_ADMIN_PASSWORD")?, secure_cookie),
-            "workos" => Self::workos(
-                WorkOs::new(
-                    required("WORKOS_API_KEY")?,
-                    required("WORKOS_CLIENT_ID")?,
-                    required("WORKOS_REDIRECT_URI")?,
-                    required("WORKOS_ORGANIZATION_ID")?,
-                )?,
-                secure_cookie,
-            ),
-            _ => Err("BADDIE_AUTH must be password or workos".into()),
+    /// Checks a password, counting failures per account to slow guessing.
+    async fn check_password(&self, id: &str, password: String) -> Result<()> {
+        {
+            let mut failures = self.failures.lock().unwrap();
+            let now = Instant::now();
+            failures.retain(|_, (since, _)| now.duration_since(*since) < FAILURE_WINDOW);
+            if failures.len() >= MAX_TRACKED_FAILURES
+                || failures.get(id).is_some_and(|(_, n)| *n >= MAX_FAILURES)
+            {
+                return Err(ApiError(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many failed sign-ins; try again later".into(),
+                ));
+            }
         }
-    }
-
-    fn session(&self, headers: &HeaderMap) -> Option<Arc<tokio::sync::Mutex<Session>>> {
-        let token = cookie_value(headers, "baddie_session")?;
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.prune(Instant::now());
-        sessions.entries.get(&token).map(|(_, s)| s.clone())
-    }
-
-    fn issue(&self, session: Session, headers: &HeaderMap, response: &mut Response) -> Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(old) = cookie_value(headers, "baddie_session") {
-            sessions.remove(&old);
+        let account = id.to_owned();
+        let hash: Option<String> = self
+            .blocking(move |db| {
+                db.exec_first("SELECT password_hash FROM accounts WHERE id=?", (account,))
+                    .map_err(db_error)
+            })
+            .await?;
+        let known = hash.is_some();
+        let valid = verify(hash.unwrap_or_else(|| DUMMY_HASH.clone()), password).await?;
+        let mut failures = self.failures.lock().unwrap();
+        if known && valid {
+            failures.remove(id);
+            return Ok(());
         }
-        let token = Uuid::new_v4().to_string();
-        sessions.insert(
-            token.clone(),
-            Arc::new(tokio::sync::Mutex::new(session)),
-            Instant::now(),
-            SESSION_LIFETIME,
-            MAX_SESSIONS,
-        )?;
-        set_cookie(response, self.cookie("baddie_session", token));
+        let entry = failures.entry(id.to_owned()).or_insert((Instant::now(), 0));
+        entry.1 += 1;
+        Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "invalid username or password".into(),
+        ))
+    }
+
+    async fn issue(&self, id: String, headers: &HeaderMap, response: &mut Response) -> Result<()> {
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let old = cookie_value(headers, "baddie_session").map(|old| digest(&old));
+        let hashed = digest(&token);
+        self.blocking(move |db| {
+            let now = unix_now();
+            db.exec_drop("DELETE FROM sessions WHERE expires_at<=?", (now,))
+                .map_err(db_error)?;
+            if let Some(old) = old {
+                db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (old,))
+                    .map_err(db_error)?;
+            }
+            db.exec_drop(
+                "INSERT INTO sessions(token_hash,account_id,expires_at) VALUES(?,?,?)",
+                (hashed, id, now + SESSION_LIFETIME.as_secs() as i64),
+            )
+            .map_err(db_error)
+        })
+        .await?;
+        set_cookie(response, self.cookie(token));
         Ok(())
     }
 
-    fn cookie(&self, name: &'static str, value: String) -> Cookie<'static> {
-        Cookie::build((name, value))
+    fn cookie(&self, value: String) -> Cookie<'static> {
+        Cookie::build(("baddie_session", value))
             .http_only(true)
             .secure(self.secure_cookie)
-            .same_site(if name == "baddie_login" {
-                SameSite::Lax
-            } else {
-                SameSite::Strict
-            })
+            .same_site(SameSite::Strict)
             .path("/")
             .build()
     }
@@ -214,16 +175,12 @@ impl AuthProvider for Auth {
         Ok(self.origin.clone())
     }
 
-    fn recovery_admin(&self, editor: &Editor) -> bool {
-        matches!(self.method.as_ref(), Method::Password(_)) && editor.id == "shared-admin"
-    }
-
     fn routes(&self) -> Router {
         Router::new()
             .route("/api/auth/config", get(config))
-            .route("/api/login", get(start_login).post(password_login))
-            .route("/api/auth/callback", get(callback))
+            .route("/api/login", post(login))
             .route("/api/logout", post(logout))
+            .route("/api/account/password", post(change_password))
             .layer(middleware::map_response(|mut response: Response| async {
                 response
                     .headers_mut()
@@ -238,186 +195,178 @@ impl AuthProvider for Auth {
 
     fn authorize<'a>(&'a self, headers: &'a HeaderMap) -> Authorization<'a> {
         Box::pin(async move {
-            let handle = self.session(headers).ok_or(StatusCode::UNAUTHORIZED)?;
-            let mut session = handle.lock().await;
-            if let (Method::WorkOs(config), Some(tokens)) =
-                (self.method.as_ref(), session.workos.as_mut())
-                && let Err(error) = config.validate(tokens).await
-            {
-                if let Some(token) = cookie_value(headers, "baddie_session") {
-                    self.sessions.lock().unwrap().remove(&token);
-                }
-                return Err(error.0);
-            }
-            // Waiting for a refresh must not extend expiry or undo a concurrent logout.
             let token = cookie_value(headers, "baddie_session").ok_or(StatusCode::UNAUTHORIZED)?;
-            if !self
-                .sessions
-                .lock()
-                .unwrap()
-                .entries
-                .get(&token)
-                .is_some_and(|(expires, current)| {
-                    *expires > Instant::now() && Arc::ptr_eq(current, &handle)
+            let hashed = digest(&token);
+            let id: Option<String> = self
+                .blocking(move |db| {
+                    db.exec_first(
+                        "SELECT account_id FROM sessions WHERE token_hash=? AND expires_at>?",
+                        (hashed, unix_now()),
+                    )
+                    .map_err(db_error)
                 })
-            {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-            Ok(session.editor.clone())
+                .await
+                .map_err(|e| e.0)?;
+            id.map(|id| Editor { id }).ok_or(StatusCode::UNAUTHORIZED)
         })
     }
 }
 
-async fn config(State(auth): State<Auth>) -> Json<serde_json::Value> {
-    Json(match auth.method.as_ref() {
-        Method::Password(_) => json!({"method": "password"}),
-        Method::WorkOs(_) => json!({"method": "redirect", "label": "Sign in with WorkOS"}),
-    })
+async fn config() -> Json<serde_json::Value> {
+    Json(json!({"method": "password"}))
 }
 
 #[derive(Deserialize)]
 struct Login {
+    username: String,
     password: String,
 }
 
-async fn password_login(
+async fn login(
     State(auth): State<Auth>,
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Result<Response> {
     auth.origin.check(&headers)?;
-    let Method::Password(password) = auth.method.as_ref() else {
-        return Err(ApiError(
-            StatusCode::NOT_FOUND,
-            "password login is disabled".into(),
-        ));
-    };
-    if input
-        .password
-        .as_bytes()
-        .ct_eq(password.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "invalid password".into(),
-        ));
-    }
+    auth.check_password(&input.username, input.password).await?;
     let mut response = StatusCode::NO_CONTENT.into_response();
-    auth.issue(
-        Session {
-            editor: Editor {
-                id: "shared-admin".into(),
-            },
-            workos: None,
-        },
-        &headers,
-        &mut response,
-    )?;
-    Ok(response)
-}
-
-async fn start_login(State(auth): State<Auth>, headers: HeaderMap) -> Result<Response> {
-    auth.origin.check(&headers)?;
-    let Method::WorkOs(config) = auth.method.as_ref() else {
-        return Err(ApiError::not_found());
-    };
-    let state = Uuid::new_v4().to_string();
-    let verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let mut pending = auth.pending.lock().unwrap();
-    if let Some(old) = cookie_value(&headers, "baddie_login") {
-        pending.remove(&old);
-    }
-    pending.insert(
-        state.clone(),
-        verifier,
-        Instant::now(),
-        LOGIN_LIFETIME,
-        MAX_PENDING_LOGINS,
-    )?;
-    let url = config.authorization_url(&state, &challenge);
-    let mut response = Redirect::to(url.as_str()).into_response();
-    let mut cookie = auth.cookie("baddie_login", state);
-    cookie.set_max_age(Some(LOGIN_LIFETIME.try_into().unwrap()));
-    set_cookie(&mut response, cookie);
+    auth.issue(input.username, &headers, &mut response).await?;
     Ok(response)
 }
 
 #[derive(Deserialize)]
-struct Callback {
-    state: Option<String>,
-    code: Option<String>,
-    error: Option<String>,
+struct PasswordChange {
+    current_password: String,
+    password: String,
 }
 
-async fn callback(
+/// Members change their own password. This ends their other sessions.
+async fn change_password(
     State(auth): State<Auth>,
     headers: HeaderMap,
-    Query(query): Query<Callback>,
-) -> Response {
-    let result = complete_login(&auth, &headers, query).await;
-    let mut response = match result {
-        Ok(session) => {
-            let mut response = Redirect::to("/admin").into_response();
-            match auth.issue(session, &headers, &mut response) {
-                Ok(()) => response,
-                Err(error) => error.into_response(),
-            }
-        }
-        Err(_) => Redirect::to("/admin?auth_error=1").into_response(),
-    };
-    let mut cookie = auth.cookie("baddie_login", String::new());
-    cookie.make_removal();
-    set_cookie(&mut response, cookie);
-    response
-}
-
-async fn complete_login(auth: &Auth, headers: &HeaderMap, query: Callback) -> Result<Session> {
-    let Method::WorkOs(config) = auth.method.as_ref() else {
-        return Err(ApiError::not_found());
-    };
-    let invalid = || ApiError(StatusCode::UNAUTHORIZED, "sign-in failed".into());
-    let state = cookie_value(headers, "baddie_login").ok_or_else(invalid)?;
-    if query.state.as_deref() != Some(&state) {
-        return Err(invalid());
-    }
-    let verifier = auth
-        .pending
-        .lock()
-        .unwrap()
-        .remove(&state)
-        .ok_or_else(invalid)?;
-    if query.error.is_some() {
-        return Err(invalid());
-    }
-    let code = query.code.filter(|v| !v.is_empty()).ok_or_else(invalid)?;
-    let tokens = config.exchange(&code, &verifier).await?;
-    Ok(Session {
-        editor: Editor {
-            id: tokens.user_id.clone(),
-        },
-        workos: Some(tokens),
-    })
+    Json(input): Json<PasswordChange>,
+) -> Result<Response> {
+    auth.origin.check(&headers)?;
+    let editor = auth
+        .authorize(&headers)
+        .await
+        .map_err(|status| ApiError(status, "authentication required".into()))?;
+    let hash = hash_password(input.password).await?;
+    auth.check_password(&editor.id, input.current_password)
+        .await
+        .map_err(|e| match e.0 {
+            StatusCode::UNAUTHORIZED => ApiError(
+                StatusCode::FORBIDDEN,
+                "current password is incorrect".into(),
+            ),
+            _ => e,
+        })?;
+    let id = editor.id.clone();
+    auth.blocking(move |db| store_password(db, &id, &hash))
+        .await?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    auth.issue(editor.id, &headers, &mut response).await?;
+    Ok(response)
 }
 
 async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Result<Response> {
     auth.origin.check(&headers)?;
-    let session = cookie_value(&headers, "baddie_session")
-        .and_then(|token| auth.sessions.lock().unwrap().remove(&token));
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    if let (Method::WorkOs(config), Some(session)) = (auth.method.as_ref(), session) {
-        let session = session.lock().await;
-        if let Some(tokens) = &session.workos {
-            response = Json(json!({"redirect_url": config.logout_url(&tokens.session_id)}))
-                .into_response();
-        }
+    if let Some(token) = cookie_value(&headers, "baddie_session") {
+        let hashed = digest(&token);
+        auth.blocking(move |db| {
+            db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (hashed,))
+                .map_err(db_error)
+        })
+        .await?;
     }
-    let mut cookie = auth.cookie("baddie_session", String::new());
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let mut cookie = auth.cookie(String::new());
     cookie.make_removal();
     set_cookie(&mut response, cookie);
     Ok(response)
+}
+
+fn validate_password(password: &str) -> Result<()> {
+    if password.chars().count() < MIN_PASSWORD_CHARS || password.len() > MAX_PASSWORD_BYTES {
+        return Err(ApiError::bad(format!(
+            "passwords need {MIN_PASSWORD_CHARS} to {MAX_PASSWORD_BYTES} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Validates and hashes a new password on a blocking thread.
+pub(crate) async fn hash_password(password: String) -> Result<String> {
+    validate_password(&password)?;
+    let _permit = HASHING.acquire().await.unwrap();
+    tokio::task::spawn_blocking(move || hash_now(&password))
+        .await
+        .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "hashing failed".into()))?
+}
+
+/// Synchronous variant for startup and the CLI.
+pub(crate) fn hash_password_now(password: &str) -> Result<String> {
+    validate_password(password)?;
+    hash_now(password)
+}
+
+fn hash_now(password: &str) -> Result<String> {
+    Argon2::default()
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
+        .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "hashing failed".into()))
+}
+
+async fn verify(hash: String, password: String) -> Result<bool> {
+    let _permit = HASHING.acquire().await.unwrap();
+    tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&hash).is_ok_and(|parsed| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        })
+    })
+    .await
+    .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "hashing failed".into()))
+}
+
+/// Sets an account's password hash and ends all of its sessions.
+pub(crate) fn store_password(db: &mut impl Queryable, id: &str, hash: &str) -> Result<()> {
+    if id.trim().is_empty() || id.len() > 255 {
+        return Err(ApiError::bad("usernames need 1 to 255 bytes"));
+    }
+    db.exec_drop(
+        "INSERT INTO accounts(id,password_hash) VALUES(?,?) ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash)",
+        (id, hash),
+    )
+    .map_err(db_error)?;
+    db.exec_drop("DELETE FROM sessions WHERE account_id=?", (id,))
+        .map_err(db_error)
+}
+
+/// Deletes an account's password and sessions.
+pub(crate) fn remove_account(db: &mut impl Queryable, id: &str) -> Result<()> {
+    db.exec_drop("DELETE FROM accounts WHERE id=?", (id,))
+        .map_err(db_error)
+}
+
+pub(crate) fn has_account(db: &mut impl Queryable, id: &str) -> Result<bool> {
+    Ok(db
+        .exec_first::<i64, _, _>("SELECT 1 FROM accounts WHERE id=?", (id,))
+        .map_err(db_error)?
+        .is_some())
+}
+
+/// Session tokens are stored only as digests, so a database copy cannot sign in.
+fn digest(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 fn set_cookie(response: &mut Response, cookie: Cookie<'_>) {
@@ -524,3 +473,6 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
             (key == name).then(|| value.to_owned())
         })
 }
+
+#[cfg(test)]
+mod tests;

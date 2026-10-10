@@ -7,7 +7,7 @@
 Install Rust 1.98 or later, Node 24.11 or later, and pnpm. The frontend pins its pnpm version in `web/package.json`. Start MySQL with `docker compose up -d mysql` using the `.env` from [container setup](deployment.md#run-in-a-linux-container). In two terminals:
 
 ```sh
-# Export BADDIE_ADMIN_PASSWORD and DATABASE_URL securely first.
+# Export BADDIE_ADMIN_PASSWORD and DATABASE_URL securely first. Sign in as admin.
 # DATABASE_URL uses mysql://baddiecore:<MYSQL_PASSWORD>@127.0.0.1:3306/baddiecore
 cargo run
 
