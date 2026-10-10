@@ -28,6 +28,7 @@ const styles = stylex.create({
 });
 export function Login(p: { onSuccess: () => void }) {
   const config = createRequest(api.authConfig);
+  const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal(
     new URLSearchParams(window.location.search).has("auth_error")
@@ -45,7 +46,7 @@ export function Login(p: { onSuccess: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await api.login(password());
+      await api.login(username(), password());
       p.onSuccess();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not sign in");
@@ -62,11 +63,22 @@ export function Login(p: { onSuccess: () => void }) {
         <p {...stylex.attrs(common.muted)}>Sign in to shape your site.</p>
         <Show when={config.value()?.method === "password"}>
           <label {...stylex.attrs(common.label)}>
-            Password
+            Username
             <input
               {...stylex.attrs(common.control)}
               autofocus
+              autocomplete="username"
+              required
+              value={username()}
+              onInput={(e) => setUsername(e.currentTarget.value)}
+            />
+          </label>
+          <label {...stylex.attrs(common.label)}>
+            Password
+            <input
+              {...stylex.attrs(common.control)}
               type="password"
+              autocomplete="current-password"
               required
               value={password()}
               onInput={(e) => setPassword(e.currentTarget.value)}

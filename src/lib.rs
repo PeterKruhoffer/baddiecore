@@ -141,201 +141,235 @@ impl IntoResponse for ApiError {
 type Result<T> = std::result::Result<T, ApiError>;
 
 impl AppState {
+    /// Opens the CMS with built-in local accounts. When no administrator can
+    /// sign in, `admin_password` creates or repairs the `admin` account.
     pub fn open(
         database_url: &str,
-        password: String,
+        admin_password: Option<String>,
         secure_cookie: bool,
     ) -> std::result::Result<Self, String> {
-        Self::open_with_auth(
-            database_url,
-            Arc::new(auth::Auth::password(password, secure_cookie)?),
-        )
+        let db = connect(database_url)?;
+        let auth = auth::Auth::new(db.clone(), secure_cookie)?;
+        let state = Self::with_pool(db, Arc::new(auth))?;
+        state
+            .transaction(|tx| workflow::bootstrap_admin(tx, admin_password.as_deref()))
+            .map_err(|e| e.1)?;
+        Ok(state)
     }
 
     pub fn open_with_auth(
         database_url: &str,
         auth: Arc<dyn auth::AuthProvider>,
     ) -> std::result::Result<Self, String> {
+        Self::with_pool(connect(database_url)?, auth)
+    }
+
+    fn with_pool(db: Pool, auth: Arc<dyn auth::AuthProvider>) -> std::result::Result<Self, String> {
         let origin = auth.origin_policy()?;
-        let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
-        let db = Pool::new(opts).map_err(|e| {
-            db_error(e);
-            "could not connect to MySQL"
-        })?;
-        let mut conn = db.get_conn().map_err(|e| {
-            db_error(e);
-            "could not connect to MySQL"
-        })?;
-        for statement in [
-            "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
-            "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
-            "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            // What each Git export path held at this database's last pull or push. See serialization.
-            "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-            "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        ] {
-            conn.query_drop(statement).map_err(|e| {
-                db_error(e);
-                "could not initialize MySQL schema"
-            })?;
-        }
+        prepare(&db)?;
         // Bound running and queued blocking jobs independently of Tokio's thread pool.
-        let state = Self {
+        Ok(Self {
             db,
             auth,
             database_slots: Arc::new(Semaphore::new(16)),
             origin,
             headless: headless::ApiKeys::default(),
-        };
-        state
-            .transaction(|db| workflow::initialize(db))
-            .map_err(|e| e.1)?;
-        state.seed().map_err(|e| e.1)?;
-        Ok(state)
-    }
-
-    fn seed(&self) -> Result<()> {
-        self.transaction(|tx| {
-            let count: i64 = tx
-                .query_first("SELECT count(*) FROM components")
-                .map_err(db_error)?
-                .unwrap();
-            if count != 0 {
-                return Ok(());
-            }
-            let specs = [
-                (
-                    "hero",
-                    "Hero",
-                    Renderer::Hero,
-                    vec![
-                        ("eyebrow", false, FieldKind::Text),
-                        ("title", true, FieldKind::Text),
-                        ("body", false, FieldKind::Textarea),
-                        ("button_label", false, FieldKind::Text),
-                        ("button_url", false, FieldKind::Url),
-                    ],
-                ),
-                (
-                    "text",
-                    "Text",
-                    Renderer::Text,
-                    vec![
-                        ("title", true, FieldKind::Text),
-                        ("body", false, FieldKind::Textarea),
-                    ],
-                ),
-                (
-                    "callout",
-                    "Callout",
-                    Renderer::Callout,
-                    vec![
-                        ("title", true, FieldKind::Text),
-                        ("body", false, FieldKind::Textarea),
-                        ("button_label", false, FieldKind::Text),
-                        ("button_url", false, FieldKind::Url),
-                    ],
-                ),
-                (
-                    "cards",
-                    "Cards",
-                    Renderer::Cards,
-                    vec![
-                        ("title", true, FieldKind::Text),
-                        ("body", false, FieldKind::Textarea),
-                    ],
-                ),
-            ];
-            let mut components = Vec::new();
-            for (id, name, renderer, fields) in specs {
-                let component = Component {
-                    id: id.into(),
-                    name: name.into(),
-                    description: format!("{name} content block"),
-                    renderer,
-                    fields: fields
-                        .into_iter()
-                        .map(|(name, required, kind)| Field {
-                            name: name.into(),
-                            label: title_case(name),
-                            kind,
-                            required,
-                        })
-                        .collect(),
-                };
-                tx.exec_drop(
-                    "INSERT INTO components VALUES(?,?)",
-                    (&component.id, json(&component)?),
-                )
-                .map_err(db_error)?;
-                components.push(component);
-            }
-            let template = Template {
-                id: "homepage".into(),
-                name: "Homepage".into(),
-                description: "A flexible homepage".into(),
-                regions: vec![Region {
-                    name: "main".into(),
-                    allowed_components: components.iter().map(|c| c.id.clone()).collect(),
-                    max_components: 20,
-                }],
-            };
-            tx.exec_drop(
-                "INSERT INTO templates VALUES(?,?)",
-                (&template.id, json(&template)?),
-            )
-            .map_err(db_error)?;
-            let blocks = vec![
-                Block {
-                    id: "welcome-hero".into(),
-                    component_id: "hero".into(),
-                    region: "main".into(),
-                    fields: HashMap::from([
-                        ("eyebrow".into(), "Welcome".into()),
-                        ("title".into(), "Build your site".into()),
-                        (
-                            "body".into(),
-                            "Edit this starter page in the admin area.".into(),
-                        ),
-                    ]),
-                },
-                Block {
-                    id: "welcome-text".into(),
-                    component_id: "text".into(),
-                    region: "main".into(),
-                    fields: HashMap::from([
-                        ("title".into(), "Start publishing".into()),
-                        (
-                            "body".into(),
-                            "Add content, preview your draft, and publish when it is ready.".into(),
-                        ),
-                    ]),
-                },
-            ];
-            let page = Page {
-                id: "home".into(),
-                title: "Home".into(),
-                slug: "/".into(),
-                aliases: vec![],
-                template_id: template.id.clone(),
-                blocks,
-                revision: 1,
-                published_revision: None,
-            };
-            tx.exec_drop(
-                "INSERT INTO pages VALUES(?,?,?)",
-                (&page.id, &page.slug, json(&page)?),
-            )
-            .map_err(db_error)?;
-            serialization::record_base(tx, &components, &[template])
         })
     }
+}
 
+fn connect(database_url: &str) -> std::result::Result<Pool, String> {
+    let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
+    Pool::new(opts).map_err(|e| {
+        db_error(e);
+        "could not connect to MySQL".into()
+    })
+}
+
+/// Creates tables, the organization record and seed content when missing.
+fn prepare(db: &Pool) -> std::result::Result<(), String> {
+    let mut conn = db.get_conn().map_err(|e| {
+        db_error(e);
+        "could not connect to MySQL"
+    })?;
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
+        "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
+        "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        // What each Git export path held at this database's last pull or push. See serialization.
+        "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS accounts(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, password_hash VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    ] {
+        conn.query_drop(statement).map_err(|e| {
+            db_error(e);
+            "could not initialize MySQL schema"
+        })?;
+    }
+    database_transaction(db, TransactionMode::Commit, |tx| workflow::initialize(tx))
+        .map_err(|e| e.1)?;
+    seed(db).map_err(|e| e.1)
+}
+
+/// Makes `id` an administrator and sets its password, for operator recovery.
+pub fn reset_admin(
+    database_url: &str,
+    id: &str,
+    password: &str,
+) -> std::result::Result<(), String> {
+    let db = connect(database_url)?;
+    prepare(&db)?;
+    let hash = auth::hash_password_now(password).map_err(|e| e.1)?;
+    database_transaction(&db, TransactionMode::Commit, |tx| {
+        workflow::reset_admin(tx, id, &hash)
+    })
+    .map_err(|e| e.1)
+}
+
+fn seed(db: &Pool) -> Result<()> {
+    database_transaction(db, TransactionMode::Commit, |tx| {
+        let count: i64 = tx
+            .query_first("SELECT count(*) FROM components")
+            .map_err(db_error)?
+            .unwrap();
+        if count != 0 {
+            return Ok(());
+        }
+        let specs = [
+            (
+                "hero",
+                "Hero",
+                Renderer::Hero,
+                vec![
+                    ("eyebrow", false, FieldKind::Text),
+                    ("title", true, FieldKind::Text),
+                    ("body", false, FieldKind::Textarea),
+                    ("button_label", false, FieldKind::Text),
+                    ("button_url", false, FieldKind::Url),
+                ],
+            ),
+            (
+                "text",
+                "Text",
+                Renderer::Text,
+                vec![
+                    ("title", true, FieldKind::Text),
+                    ("body", false, FieldKind::Textarea),
+                ],
+            ),
+            (
+                "callout",
+                "Callout",
+                Renderer::Callout,
+                vec![
+                    ("title", true, FieldKind::Text),
+                    ("body", false, FieldKind::Textarea),
+                    ("button_label", false, FieldKind::Text),
+                    ("button_url", false, FieldKind::Url),
+                ],
+            ),
+            (
+                "cards",
+                "Cards",
+                Renderer::Cards,
+                vec![
+                    ("title", true, FieldKind::Text),
+                    ("body", false, FieldKind::Textarea),
+                ],
+            ),
+        ];
+        let mut components = Vec::new();
+        for (id, name, renderer, fields) in specs {
+            let component = Component {
+                id: id.into(),
+                name: name.into(),
+                description: format!("{name} content block"),
+                renderer,
+                fields: fields
+                    .into_iter()
+                    .map(|(name, required, kind)| Field {
+                        name: name.into(),
+                        label: title_case(name),
+                        kind,
+                        required,
+                    })
+                    .collect(),
+            };
+            tx.exec_drop(
+                "INSERT INTO components VALUES(?,?)",
+                (&component.id, json(&component)?),
+            )
+            .map_err(db_error)?;
+            components.push(component);
+        }
+        let template = Template {
+            id: "homepage".into(),
+            name: "Homepage".into(),
+            description: "A flexible homepage".into(),
+            regions: vec![Region {
+                name: "main".into(),
+                allowed_components: components.iter().map(|c| c.id.clone()).collect(),
+                max_components: 20,
+            }],
+        };
+        tx.exec_drop(
+            "INSERT INTO templates VALUES(?,?)",
+            (&template.id, json(&template)?),
+        )
+        .map_err(db_error)?;
+        let blocks = vec![
+            Block {
+                id: "welcome-hero".into(),
+                component_id: "hero".into(),
+                region: "main".into(),
+                fields: HashMap::from([
+                    ("eyebrow".into(), "Welcome".into()),
+                    ("title".into(), "Build your site".into()),
+                    (
+                        "body".into(),
+                        "Edit this starter page in the admin area.".into(),
+                    ),
+                ]),
+            },
+            Block {
+                id: "welcome-text".into(),
+                component_id: "text".into(),
+                region: "main".into(),
+                fields: HashMap::from([
+                    ("title".into(), "Start publishing".into()),
+                    (
+                        "body".into(),
+                        "Add content, preview your draft, and publish when it is ready.".into(),
+                    ),
+                ]),
+            },
+        ];
+        let page = Page {
+            id: "home".into(),
+            title: "Home".into(),
+            slug: "/".into(),
+            aliases: vec![],
+            template_id: template.id.clone(),
+            blocks,
+            revision: 1,
+            published_revision: None,
+        };
+        tx.exec_drop(
+            "INSERT INTO pages VALUES(?,?,?)",
+            (&page.id, &page.slug, json(&page)?),
+        )
+        .map_err(db_error)?;
+        serialization::record_base(tx, &components, &[template])
+    })
+}
+
+impl AppState {
     fn transaction<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> Result<T>) -> Result<T> {
         database_transaction(&self.db, TransactionMode::Commit, f)
     }
@@ -428,6 +462,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
             "/organization",
             get(workflow::get_organization).put(workflow::save_organization),
         )
+        .route("/members/{id}/password", put(workflow::set_password))
         .route("/templates", post(create_template))
         .route(
             "/templates/{id}",
@@ -1312,10 +1347,12 @@ mod tests {
     #[tokio::test]
     async fn cancelled_requests_keep_their_database_slot_until_work_finishes() {
         // An empty pool is sufficient: this test never connects to a database.
+        let pool =
+            Pool::new(Opts::from_url("mysql://127.0.0.1/test?pool_min=0&pool_max=1").unwrap())
+                .unwrap();
         let state = AppState {
-            db: Pool::new(Opts::from_url("mysql://127.0.0.1/test?pool_min=0&pool_max=1").unwrap())
-                .unwrap(),
-            auth: Arc::new(auth::Auth::password("test".into(), false).unwrap()),
+            db: pool.clone(),
+            auth: Arc::new(auth::Auth::new(pool.clone(), false).unwrap()),
             database_slots: Arc::new(Semaphore::new(1)),
             origin: auth::OriginPolicy::from_env(false).unwrap(),
             headless: headless::ApiKeys::default(),

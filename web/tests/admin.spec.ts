@@ -2,6 +2,12 @@ import { expect, test, type Page as BrowserPage } from "@playwright/test";
 import { bootstrap } from "./admin-fixture";
 import type { Bootstrap, Page, Template } from "../src/types";
 
+const organization = {
+  revision: 1,
+  members: [{ id: "admin", name: "Admin", role: "admin", paths: [], groups: [] }],
+  groups: [],
+};
+
 async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
   const writes: { url: string; body: Record<string, any> }[] = [];
   const failures = { save: false, publish: false, review: false };
@@ -11,6 +17,16 @@ async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
     const body = req.method() === "GET" ? undefined : req.postDataJSON();
     if (body) writes.push({ url, body });
     if (url === "/api/admin/bootstrap") return route.fulfill({ json: data });
+    if (url === "/api/auth/config") return route.fulfill({ json: { method: "password" } });
+    if (url === "/api/account/password")
+      return body.current_password === "old-password"
+        ? route.fulfill({ status: 204 })
+        : route.fulfill({ status: 403, json: { error: "current password is incorrect" } });
+    if (url === "/api/admin/organization")
+      return route.fulfill({
+        json: req.method() === "PUT" ? { ...body, revision: body.revision + 1 } : organization,
+      });
+    if (/^\/api\/admin\/members\/[^/]+\/password$/.test(url)) return route.fulfill({ status: 204 });
     if (/^\/api\/admin\/pages\/[^/]+$/.test(url) && req.method() === "PUT") {
       if (failures.save)
         return route.fulfill({
@@ -475,4 +491,36 @@ test("narrow editor keeps navigation, fields and publish confirmation usable wit
   expect(rect!.width).toBeLessThanOrEqual(390);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).not.toBeVisible();
+});
+
+test("members change their own password and admins add members with passwords", async ({
+  page,
+}) => {
+  const { writes } = await openWorkspace(page);
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByLabel("Current password").fill("wrong-password");
+  await page.getByLabel("New password", { exact: true }).fill("new-password");
+  await page.getByLabel("Repeat new password").fill("other-password");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByRole("alert")).toHaveText("The new passwords do not match.");
+  await page.getByLabel("Repeat new password").fill("new-password");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByRole("alert")).toHaveText("current password is incorrect");
+  await page.getByLabel("Current password").fill("old-password");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByRole("status")).toHaveText("Password changed.");
+  expect(writes.at(-1)).toEqual({
+    url: "/api/account/password",
+    body: { current_password: "old-password", password: "new-password" },
+  });
+
+  await page.getByRole("button", { name: "Organization", exact: true }).click();
+  const add = page.locator("form").filter({ hasText: "Add member" });
+  await add.getByLabel("Username").fill("casey");
+  await add.getByLabel("Display name").fill("Casey");
+  await add.getByLabel("Password").fill("casey-password");
+  await add.getByRole("button", { name: "Save member" }).click();
+  await expect.poll(() => writes.at(-1)?.url).toBe("/api/admin/members/casey/password");
+  expect(writes.at(-2)?.body.members.map((m: { id: string }) => m.id)).toEqual(["admin", "casey"]);
+  expect(writes.at(-1)?.body).toEqual({ password: "casey-password" });
 });

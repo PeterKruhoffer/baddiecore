@@ -8,6 +8,7 @@ import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
 import { ContentSidebar } from "./ContentSidebar";
 import { OrganizationEditor } from "./OrganizationEditor";
+import { AccountEditor } from "./AccountEditor";
 import { ReviewOverview } from "./ReviewOverview";
 import { PackageExport, PackageInstall } from "./Packages";
 import { common } from "../common.stylex";
@@ -187,9 +188,11 @@ const styles = stylex.create({
 });
 export function AdminApp() {
   const request = createRequest(() => api.bootstrap());
+  const authConfig = createRequest(api.authConfig);
+  const passwords = () => authConfig.value()?.method === "password";
   const data = () => (request.error() ? undefined : request.value());
   const refetch = request.refetch;
-  type Section = "pages" | "templates" | "components" | "reviews" | "organization";
+  type Section = "pages" | "templates" | "components" | "reviews" | "organization" | "account";
   const [section, setSection] = createSignal<Section>("pages");
   const [pageId, setPageId] = createSignal<string>();
   const [blockId, setBlockId] = createSignal<string>();
@@ -304,6 +307,18 @@ export function AdminApp() {
             <a {...stylex.attrs(styles.footLink)} href="/" target="_blank">
               View site ↗
             </a>
+            <Show when={passwords()}>
+              <button
+                {...stylex.attrs(
+                  common.button,
+                  styles.navButton,
+                  section() === "account" && styles.active,
+                )}
+                onClick={() => changeSection("account")}
+              >
+                Account
+              </button>
+            </Show>
             <button
               {...stylex.attrs(common.button, styles.navButton)}
               onClick={async () => {
@@ -349,10 +364,19 @@ export function AdminApp() {
               const d = () => dataAccessor();
               return (
                 <Show
-                  when={section() !== "organization"}
+                  when={section() !== "organization" && section() !== "account"}
                   fallback={
-                    <Show when={d().access.role === "admin"}>
-                      <OrganizationEditor onDirty={setDirty} onRefresh={refresh} />
+                    <Show
+                      when={section() === "organization"}
+                      fallback={<AccountEditor id={d().access.id} />}
+                    >
+                      <Show when={d().access.role === "admin"}>
+                        <OrganizationEditor
+                          passwords={passwords()}
+                          onDirty={setDirty}
+                          onRefresh={refresh}
+                        />
+                      </Show>
                     </Show>
                   }
                 >

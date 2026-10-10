@@ -70,14 +70,7 @@ fn organization(db: &mut impl Queryable) -> Result<Organization> {
     load_one(db, "organization", "installation")
 }
 
-fn resolve(org: Organization, id: String, recovery: bool) -> Result<Access> {
-    if recovery {
-        return Ok(Access {
-            id,
-            role: Role::Admin,
-            paths: vec![],
-        });
-    }
+fn resolve(org: Organization, id: String) -> Result<Access> {
     let member = org
         .members
         .iter()
@@ -100,9 +93,8 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&mut Transaction<'_>, Access) -> Result<T> + Send + 'static,
     {
-        let recovery = self.auth.recovery_admin(&editor);
         self.run(move |db| {
-            let access = resolve(organization(db)?, editor.id, recovery)?;
+            let access = resolve(organization(db)?, editor.id)?;
             f(db, access)
         })
         .await
@@ -110,27 +102,75 @@ impl AppState {
 }
 
 pub(super) fn initialize(db: &mut impl Queryable) -> Result<()> {
-    let mut org = Organization::default();
-    if let Ok(id) = std::env::var("BADDIE_BOOTSTRAP_ADMIN_ID") {
-        if id.trim().is_empty() {
-            return Err(ApiError::bad("BADDIE_BOOTSTRAP_ADMIN_ID must not be empty"));
-        }
-        org.members.push(Member {
-            id,
-            name: "Bootstrap administrator".into(),
-            role: Role::Admin,
-            paths: vec![],
-            groups: vec![],
-        });
-    }
-    // Only applies when initializing membership for this installation. Never
-    // resurrect a removed member or overwrite administrators' later changes.
     db.exec_drop(
         "INSERT IGNORE INTO organization(id,data) VALUES('installation',?)",
-        (json(&org)?,),
+        (json(&Organization::default())?,),
     )
     .map_err(db_error)?;
     Ok(())
+}
+
+/// Creates the `admin` account only when no administrator has a password, so
+/// a configured password never overrides administrators' later changes.
+pub(super) fn bootstrap_admin(db: &mut impl Queryable, password: Option<&str>) -> Result<()> {
+    for member in organization(db)?.members {
+        if member.role == Role::Admin && auth::has_account(db, &member.id)? {
+            return Ok(());
+        }
+    }
+    match password.filter(|p| !p.is_empty()) {
+        Some(password) => reset_admin(db, "admin", &auth::hash_password_now(password)?),
+        None => Err(ApiError::bad(
+            "no administrator can sign in; set BADDIE_ADMIN_PASSWORD or run `baddiecore reset-admin <username>`",
+        )),
+    }
+}
+
+/// Makes `id` an administrator, adding the member if needed, and sets its password.
+pub(super) fn reset_admin(db: &mut impl Queryable, id: &str, hash: &str) -> Result<()> {
+    let mut org = organization(db)?;
+    match org.members.iter_mut().find(|m| m.id == id) {
+        Some(member) => member.role = Role::Admin,
+        None => org.members.push(Member {
+            id: id.into(),
+            name: id.into(),
+            role: Role::Admin,
+            paths: vec![],
+            groups: vec![],
+        }),
+    }
+    org.revision += 1;
+    db.exec_drop(
+        "UPDATE organization SET data=? WHERE id='installation'",
+        (json(&org)?,),
+    )
+    .map_err(db_error)?;
+    auth::store_password(db, id, hash)
+}
+
+#[derive(Deserialize)]
+pub(super) struct NewPassword {
+    password: String,
+}
+
+/// Administrators set a member's password. This ends the member's sessions.
+pub(super) async fn set_password(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<NewPassword>,
+) -> Result<StatusCode> {
+    let hash = auth::hash_password(input.password).await?;
+    state
+        .run_as(editor, move |db, access| {
+            access.admin()?;
+            if !organization(db)?.members.iter().any(|m| m.id == id) {
+                return Err(ApiError::not_found());
+            }
+            auth::store_password(db, &id, &hash)?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await
 }
 
 pub(super) async fn get_organization(
@@ -192,6 +232,14 @@ pub(super) async fn save_organization(
                 && old.members.iter().any(|m| m.role == Role::Admin)
             {
                 return Err(ApiError::bad("keep at least one administrator"));
+            }
+            // Removed members lose their password and sessions immediately.
+            for removed in old
+                .members
+                .iter()
+                .filter(|m| !org.members.iter().any(|n| n.id == m.id))
+            {
+                auth::remove_account(db, &removed.id)?;
             }
             org.revision += 1;
             db.exec_drop(
@@ -331,8 +379,8 @@ mod tests {
                 paths: vec!["/about/team".into()],
             }],
         };
-        assert!(resolve(org.clone(), "shared-admin".into(), false).is_err());
-        let access = resolve(org, "user".into(), false).unwrap();
+        assert!(resolve(org.clone(), "admin".into()).is_err());
+        let access = resolve(org, "user".into()).unwrap();
         for path in ["/news", "/news/a", "/about/team", "/about/team/a"] {
             assert!(access.allows(path));
         }

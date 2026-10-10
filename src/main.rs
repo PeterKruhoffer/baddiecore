@@ -1,6 +1,10 @@
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{
+    env,
+    io::{BufRead, IsTerminal},
+    net::SocketAddr,
+};
 
-use baddiecore::{AppState, auth::Auth, headless::ApiKeys, router, serialization};
+use baddiecore::{AppState, headless::ApiKeys, router, serialization};
 use mysql::{Opts, Pool};
 
 #[tokio::main]
@@ -11,6 +15,10 @@ async fn main() {
         .is_some_and(|a| a == "pull" || a == "push" || a == "status")
     {
         serialization_cli(&args);
+        return;
+    }
+    if args.first().is_some_and(|a| a == "reset-admin") {
+        reset_admin_cli(&args[1..]);
         return;
     }
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
@@ -32,10 +40,6 @@ async fn main() {
     let static_dir = env::var("BADDIE_STATIC").unwrap_or_else(|_| "web/dist".into());
     let secure_cookie =
         env::var("BADDIE_SECURE_COOKIE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let auth = Auth::from_env(secure_cookie).unwrap_or_else(|e| {
-        eprintln!("authentication configuration failed: {e}");
-        std::process::exit(2)
-    });
     let headless = ApiKeys::new(
         env::var("BADDIE_CONTENT_API_KEY").ok(),
         env::var("BADDIE_COMPONENT_API_KEY").ok(),
@@ -44,7 +48,8 @@ async fn main() {
         eprintln!("headless configuration failed: {e}");
         std::process::exit(2)
     });
-    let state = AppState::open_with_auth(&db, Arc::new(auth))
+    let admin_password = env::var("BADDIE_ADMIN_PASSWORD").ok();
+    let state = AppState::open(&db, admin_password, secure_cookie)
         .unwrap_or_else(|e| {
             eprintln!("startup failed: {e}");
             std::process::exit(2)
@@ -137,6 +142,31 @@ fn serialization_cli(args: &[String]) {
     }
 }
 
+fn reset_admin_cli(args: &[String]) {
+    let [username] = args else {
+        cli_fail("usage: baddiecore reset-admin <username>; reads the password from stdin");
+    };
+    let url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| cli_fail("DATABASE_URL is required and must be a MySQL URL"));
+    let password = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(format!("New password for {username}: "))
+            .unwrap_or_else(|_| cli_fail("could not read the password"))
+    } else {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .unwrap_or_else(|_| cli_fail("could not read the password"));
+        line.trim_end_matches(['\r', '\n']).to_owned()
+    };
+    match baddiecore::reset_admin(&url, username, &password) {
+        Ok(()) => {
+            println!("{username} is an administrator with the new password; their sessions ended.")
+        }
+        Err(e) => cli_fail(&format!("reset-admin failed: {e}")),
+    }
+}
+
 fn print_changes(changes: &[serialization::Change]) {
     for change in changes {
         println!("  {:<9} {}", change.action, change.path);
@@ -184,6 +214,11 @@ baddiecore push [directory] [--force] [--dry-run]
   Copy file changes, including deletions, into the database in one transaction. --force
   makes the database mirror the files, discarding database changes that were not pulled.
   --dry-run validates and rolls back.
+
+baddiecore reset-admin <username>
+  Make <username> an administrator, adding the member if needed, and set its password.
+  Prompts for the password, or reads one line from stdin when it is not a terminal.
+  Use it to create the first account or to recover access.
 
 Both stop when an item changed on both sides, until you choose a side with --force.
 Content pages are not synced; move them with packages in the admin UI. Directory defaults

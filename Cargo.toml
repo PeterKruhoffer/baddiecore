@@ -13,12 +13,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 tower-http = { version = "0.6", features = ["fs", "limit"] }
 uuid = { version = "1", features = ["v4"] }
 subtle = "2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-base64 = "0.22"
 sha2 = "0.10"
 serde_yaml_ng = "0.10"
 tempfile = "3"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+argon2 = "0.6.0"
+url = "2"
+rpassword = "7.5.4"
 
 [dev-dependencies]
 http-body-util = "0.1"
