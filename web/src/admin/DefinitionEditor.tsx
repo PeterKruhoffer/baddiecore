@@ -1,6 +1,15 @@
 import { createSignal, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
-import type { ComponentDef, Field, FieldKind, Region, RendererName, Template } from "../types";
+import type {
+  ComponentDef,
+  Field,
+  FieldKind,
+  Region,
+  RendererName,
+  RichTextConfig,
+  Template,
+} from "../types";
+import { defaultRichTextFeatures, richTextFeatures } from "../lib/richtext";
 import { common } from "../common.stylex";
 const styles = stylex.create({
   definition: {
@@ -502,78 +511,96 @@ function ComponentFields(p: { value: ComponentDef; onChange: (v: ComponentDef) =
             const i = () => index;
             const field = () => p.value.fields[index];
             return (
-              <div {...stylex.attrs(styles.rule, styles.fieldGrid)}>
-                <label {...stylex.attrs(common.label)}>
-                  Key
-                  <input
-                    {...stylex.attrs(common.control)}
-                    required
-                    pattern="[a-z][a-z0-9_]*"
-                    value={field().name}
-                    onInput={(e) =>
-                      set(
-                        p.value.fields.map((f, n) =>
-                          n === i() ? { ...f, name: e.currentTarget.value } : f,
-                        ),
-                      )
-                    }
-                  />
-                </label>
-                <label {...stylex.attrs(common.label)}>
-                  Label
-                  <input
-                    {...stylex.attrs(common.control)}
-                    required
-                    value={field().label}
-                    onInput={(e) =>
-                      set(
-                        p.value.fields.map((f, n) =>
-                          n === i() ? { ...f, label: e.currentTarget.value } : f,
-                        ),
-                      )
-                    }
-                  />
-                </label>
-                <label {...stylex.attrs(common.label)}>
-                  Type
-                  <select
-                    {...stylex.attrs(common.control)}
-                    value={field().kind}
-                    onChange={(e) =>
-                      set(
-                        p.value.fields.map((f, n) =>
-                          n === i() ? { ...f, kind: e.currentTarget.value as FieldKind } : f,
-                        ),
-                      )
-                    }
+              <div {...stylex.attrs(styles.rule)}>
+                <div {...stylex.attrs(styles.fieldGrid)}>
+                  <label {...stylex.attrs(common.label)}>
+                    Key
+                    <input
+                      {...stylex.attrs(common.control)}
+                      required
+                      pattern="[a-z][a-z0-9_]*"
+                      value={field().name}
+                      onInput={(e) =>
+                        set(
+                          p.value.fields.map((f, n) =>
+                            n === i() ? { ...f, name: e.currentTarget.value } : f,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <label {...stylex.attrs(common.label)}>
+                    Label
+                    <input
+                      {...stylex.attrs(common.control)}
+                      required
+                      value={field().label}
+                      onInput={(e) =>
+                        set(
+                          p.value.fields.map((f, n) =>
+                            n === i() ? { ...f, label: e.currentTarget.value } : f,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <label {...stylex.attrs(common.label)}>
+                    Type
+                    <select
+                      {...stylex.attrs(common.control)}
+                      value={field().kind}
+                      onChange={(e) =>
+                        set(
+                          p.value.fields.map((f, n) =>
+                            n === i()
+                              ? {
+                                  ...f,
+                                  kind: e.currentTarget.value as FieldKind,
+                                  richtext:
+                                    e.currentTarget.value === "richtext" ? f.richtext : undefined,
+                                }
+                              : f,
+                          ),
+                        )
+                      }
+                    >
+                      <option>text</option>
+                      <option>textarea</option>
+                      <option>url</option>
+                      <option value="richtext">Rich text</option>
+                    </select>
+                  </label>
+                  <label {...stylex.attrs(common.label, styles.check)}>
+                    <input
+                      {...stylex.attrs(common.control, styles.autoWidth)}
+                      type="checkbox"
+                      checked={field().required}
+                      onChange={(e) =>
+                        set(
+                          p.value.fields.map((f, n) =>
+                            n === i() ? { ...f, required: e.currentTarget.checked } : f,
+                          ),
+                        )
+                      }
+                    />{" "}
+                    Required
+                  </label>
+                  <button
+                    type="button"
+                    {...stylex.attrs(common.button, common.danger)}
+                    onClick={() => set(p.value.fields.filter((_, n) => n !== i()))}
                   >
-                    <option>text</option>
-                    <option>textarea</option>
-                    <option>url</option>
-                  </select>
-                </label>
-                <label {...stylex.attrs(common.label, styles.check)}>
-                  <input
-                    {...stylex.attrs(common.control, styles.autoWidth)}
-                    type="checkbox"
-                    checked={field().required}
-                    onChange={(e) =>
-                      set(
-                        p.value.fields.map((f, n) =>
-                          n === i() ? { ...f, required: e.currentTarget.checked } : f,
-                        ),
-                      )
+                    Remove
+                  </button>
+                </div>
+                <Show when={field().kind === "richtext"}>
+                  <RichTextOptions
+                    field={field()}
+                    onChange={(richtext) =>
+                      set(p.value.fields.map((f, n) => (n === i() ? { ...f, richtext } : f)))
                     }
-                  />{" "}
-                  Required
-                </label>
-                <button
-                  type="button"
-                  {...stylex.attrs(common.button, common.danger)}
-                  onClick={() => set(p.value.fields.filter((_, n) => n !== i()))}
-                >
-                  Remove
-                </button>
+                  />
+                </Show>
               </div>
             );
           }}
@@ -592,5 +619,105 @@ function ComponentFields(p: { value: ComponentDef; onChange: (v: ComponentDef) =
         </button>
       </fieldset>
     </>
+  );
+}
+function RichTextOptions(p: { field: Field; onChange: (config: RichTextConfig) => void }) {
+  const features = () => p.field.richtext?.features ?? defaultRichTextFeatures;
+  const icons = () => p.field.richtext?.icons ?? [];
+  return (
+    <fieldset {...stylex.attrs(styles.fieldset)}>
+      <legend {...stylex.attrs(common.label)}>{p.field.label} rich text options</legend>
+      <p {...stylex.attrs(styles.small)}>
+        Choose the formatting editors can use. Remove formatting from drafts before disabling it.
+      </p>
+      <div {...stylex.attrs(styles.checks)}>
+        <For each={richTextFeatures}>
+          {(feature) => (
+            <label {...stylex.attrs(common.label, styles.check)}>
+              <input
+                type="checkbox"
+                checked={features().includes(feature.id)}
+                onChange={(e) =>
+                  p.onChange({
+                    ...p.field.richtext,
+                    features: e.currentTarget.checked
+                      ? [...features(), feature.id]
+                      : features().filter((id) => id !== feature.id),
+                  })
+                }
+              />
+              {feature.label}
+            </label>
+          )}
+        </For>
+      </div>
+      <p {...stylex.attrs(styles.small)}>
+        Site icons use images you host, including SVG. Use a stable ID, a readable label, and a site
+        path or HTTPS URL.
+      </p>
+      <For each={icons().map((_, index) => index)}>
+        {(index) => {
+          const icon = () => icons()[index];
+          const patch = (values: Partial<ReturnType<typeof icon>>) =>
+            p.onChange({
+              ...p.field.richtext,
+              icons: icons().map((item, i) => (i === index ? { ...item, ...values } : item)),
+            });
+          return (
+            <div {...stylex.attrs(styles.rule)}>
+              <div {...stylex.attrs(styles.row)}>
+                <label {...stylex.attrs(common.label)}>
+                  Icon ID
+                  <input
+                    {...stylex.attrs(common.control)}
+                    required
+                    pattern="[a-zA-Z0-9_-]+"
+                    value={icon().id}
+                    onInput={(e) => patch({ id: e.currentTarget.value })}
+                  />
+                </label>
+                <label {...stylex.attrs(common.label)}>
+                  Icon label
+                  <input
+                    {...stylex.attrs(common.control)}
+                    required
+                    value={icon().label}
+                    onInput={(e) => patch({ label: e.currentTarget.value })}
+                  />
+                </label>
+              </div>
+              <label {...stylex.attrs(common.label)}>
+                Icon image URL
+                <input
+                  {...stylex.attrs(common.control)}
+                  required
+                  value={icon().src}
+                  placeholder="/assets/icons/star.svg"
+                  onInput={(e) => patch({ src: e.currentTarget.value })}
+                />
+              </label>
+              <button
+                {...stylex.attrs(common.button, common.danger)}
+                type="button"
+                onClick={() =>
+                  p.onChange({ ...p.field.richtext, icons: icons().filter((_, i) => i !== index) })
+                }
+              >
+                Remove icon
+              </button>
+            </div>
+          );
+        }}
+      </For>
+      <button
+        {...stylex.attrs(common.button)}
+        type="button"
+        onClick={() =>
+          p.onChange({ ...p.field.richtext, icons: [...icons(), { id: "", label: "", src: "" }] })
+        }
+      >
+        Add site icon
+      </button>
+    </fieldset>
   );
 }

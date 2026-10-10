@@ -406,6 +406,7 @@ async fn rejects_schema_changes_that_break_drafts() {
         label: "New required".into(),
         kind: FieldKind::Text,
         required: true,
+        richtext: None,
     });
     let response = call(
         &app.app,
@@ -3248,4 +3249,220 @@ async fn deletions_travel_through_git_without_resurrection_or_lost_work() {
             .any(|c| c.id == "cards")
     );
     assert!(status(&carol_db, dir).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn richtext_validates_settings_required_content_and_preserves_published_icons_and_yaml() {
+    use baddiecore::serialization::{pull, push};
+    let app = setup().await;
+    let data = bootstrap(&app).await;
+    let mut component = data
+        .components
+        .into_iter()
+        .find(|c| c.id == "hero")
+        .unwrap();
+    let body = component
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "body")
+        .unwrap();
+    body.kind = FieldKind::Richtext;
+    body.required = true;
+    body.richtext = Some(
+        serde_json::from_value(json!({
+            "features": ["bold", "link", "ordered_list"],
+            "icons": [{"id":"star", "label":"Star", "src":"/assets/star.svg"}]
+        }))
+        .unwrap(),
+    );
+    // Existing plain text survives opting in without a data migration.
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/components/hero",
+            Some(&app.cookie),
+            Some(&component)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut page = data.pages.into_iter().find(|p| p.id == "home").unwrap();
+    for invalid in [
+        json!({"type":"doc", "content":[{"type":"paragraph"}]}),
+        json!({"type":"doc", "content":[{"type":"paragraph", "content":[{"type":"text", "text":"Copy", "marks":[{"type":"italic"}]}]}]}),
+        json!({"type":"doc", "content":[{"type":"paragraph", "content":[{"type":"icon", "attrs":{"id":"unknown"}}]}]}),
+    ] {
+        page.blocks[0]
+            .fields
+            .insert("body".into(), invalid.to_string());
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                "/api/admin/pages/home",
+                Some(&app.cookie),
+                Some(&page)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let document = json!({"type":"doc", "content":[{"type":"orderedList", "attrs":{"start":4,"type":null}, "content":[{"type":"listItem", "content":[{"type":"paragraph", "content":[
+        {"type":"text", "text":"Read more", "marks":[{"type":"bold"},{"type":"link", "attrs":{"href":"/about","target":"_blank","rel":"noopener noreferrer nofollow","class":null,"title":null}}]},
+        {"type":"icon", "attrs":{"id":"star"}}
+    ]}]}]}]}).to_string();
+    page.blocks[0]
+        .fields
+        .insert("body".into(), document.clone());
+    let saved: Page = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(saved.blocks[0].fields["body"], document);
+    assert_eq!(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages/home/publish",
+            Some(&app.cookie),
+            Some(&json!({"revision":saved.revision}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut disabled = component.clone();
+    disabled
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "body")
+        .unwrap()
+        .richtext
+        .as_mut()
+        .unwrap()
+        .features
+        .clear();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/components/hero",
+            Some(&app.cookie),
+            Some(&disabled)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut missing_icon = component.clone();
+    missing_icon
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "body")
+        .unwrap()
+        .richtext
+        .as_mut()
+        .unwrap()
+        .icons
+        .clear();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/components/hero",
+            Some(&app.cookie),
+            Some(&missing_icon)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    component
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "body")
+        .unwrap()
+        .richtext
+        .as_mut()
+        .unwrap()
+        .icons[0]
+        .src = "/assets/new-star.svg".into();
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/components/hero",
+            Some(&app.cookie),
+            Some(&component)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let live: Content =
+        read(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await).await;
+    assert_eq!(live.page.blocks[0].fields["body"], document);
+    assert_eq!(
+        live.components
+            .iter()
+            .find(|c| c.id == "hero")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "body")
+            .unwrap()
+            .richtext
+            .as_ref()
+            .unwrap()
+            .icons[0]
+            .src,
+        "/assets/star.svg"
+    );
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    pull(&pool, dir.path(), false).unwrap();
+    push(&pool, dir.path(), false, false).unwrap();
+    // Definitions travel through Git; editorial documents travel in packages.
+    let target = setup().await;
+    let target_pool = Pool::new(Opts::from_url(&target.db.url).unwrap()).unwrap();
+    push(&target_pool, dir.path(), false, false).unwrap();
+    let after = bootstrap(&target).await;
+    assert_eq!(
+        after
+            .components
+            .into_iter()
+            .find(|c| c.id == "hero")
+            .unwrap(),
+        component
+    );
+    let response = raw_call(
+        &target.app,
+        "POST",
+        "/api/admin/package",
+        &target.cookie,
+        export_package(&app, "/").await,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let after = bootstrap(&target).await;
+    assert_eq!(
+        after
+            .pages
+            .into_iter()
+            .find(|p| p.id == "home")
+            .unwrap()
+            .blocks[0]
+            .fields["body"],
+        document
+    );
 }

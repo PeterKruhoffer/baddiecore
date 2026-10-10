@@ -6,12 +6,41 @@
 
 - Pages have a path, template, ordered component instances, and a draft revision.
 - Templates define named regions, component allowlists, and maximum counts. An empty allowlist permits nothing.
-- Component definitions have typed text, textarea, or URL fields and a renderer. Hero, text, callout, and cards renderers ship with this version. Cards render one body line per card. External components use a content preview in the CMS and renderer code in your connected app.
+- Component definitions have typed text, textarea, URL, or rich-text fields and a renderer. Hero, text, callout, and cards renderers ship with this version. Cards render one body line per card, or one top-level rich-text block per card. External components use a content preview in the CMS and renderer code in your connected app.
 - The experience editor renders the page with the same renderer as the public site. Select a block to edit its fields, add allowed components, drag to reorder, or use the move buttons.
 - Save draft keeps edits private. Administrators can publish directly. Editors submit new or existing pages for review; reviewers approve and publish or request changes with feedback. Publication snapshots the page, template, and component definitions together. Later draft or schema edits do not alter that snapshot.
 - Concurrent page saves return a conflict instead of overwriting another revision. Template and component changes that would invalidate existing drafts are rejected.
 
 The sidebar keeps the page tree under Site available while editing. Administrators also see templates and components under System. Search finds accessible saved pages by title or path, individual blocks by component name or field text, and administrator-only definitions by name or description. Multiple search words must all match the same result. A block result opens that page with its properties selected; navigation asks before discarding unsaved edits. Search does not include unsaved changes or older published snapshots.
+
+## Configure rich text
+
+Rich-text fields use the bundled Tiptap editor with formatting, links, lists, undo and redo. New installations use rich text for the Hero, Text, and Callout body fields. Existing definitions stay unchanged. In **System → Components**, select a component, set a field's Type to **Rich text**, then save. Existing plain copy remains literal text and becomes a JSON document on the next edit. Strings starting with `{` are reserved for JSON documents in rich-text fields; wrap such literal copy in a paragraph document before switching its field type.
+
+Each rich-text field has checkboxes for bold, italic, underline, strikethrough, headings, bullet lists, numbered lists, quotes, and links. All are enabled by default. Clear every checkbox for a paragraph-only editor. Disabled options also disable shortcuts and pasted formatting; server validation rejects them in API, CLI, and package writes. Remove formatting from existing drafts before disabling the option. The CMS rejects settings changes that would invalidate a draft rather than silently stripping its content.
+
+The toolbar groups formatting icons, lists, links, and history. Hover a button for its label. **Text style** switches between Paragraph, Heading 2, and Heading 3. To add or edit a link, select text and click **Link**. Choose **Site link** to pick a page you can access, or **Custom site path** for a route such as `/about#team`. Unpublished pages are marked in the picker. Choose **External link** to enter a full HTTP(S) URL. Apply saves the destination; Remove link keeps the text. Escape or Cancel discards pending link changes. Links store paths, not page IDs, so update links when moving their destination pages, or add a [route alias](#route-aliases). Both link types open in the same tab.
+
+Use **Add site icon** to register an icon's stable ID, readable label, and image URL. Editors then choose it from **Site icon**. Images can be SVG or raster files already hosted on your site, using a root-relative path or an HTTP(S) URL. SVG loads as an image, never inline executable markup. The CMS does not upload files, accept raw SVG, or load icon scripts. Removing an icon used by a draft is rejected. Icon URLs and labels are part of published definitions; keep the referenced image files available and version their URLs when changing the images themselves.
+
+Options live on the field definition, so they also work through component registration and Git/YAML imports. For example:
+
+```json
+{
+  "name": "body",
+  "label": "Body",
+  "kind": "richtext",
+  "required": true,
+  "richtext": {
+    "features": ["bold", "italic", "bullet_list", "link"],
+    "icons": [{"id": "brand-star", "label": "Brand star", "src": "/assets/icons/star.svg"}]
+  }
+}
+```
+
+Block fields remain strings. A rich-text value is a serialized Tiptap document, for example `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello","marks":[{"type":"bold"}]}]}]}`. Supported nodes are `doc`, `paragraph`, `text`, `hardBreak`, `heading` at levels 2 and 3, `bulletList`, `orderedList`, `listItem`, `blockquote`, and `icon` with `attrs: {id}`. Supported marks are `bold`, `italic`, `underline`, `strike`, and `link` with a safe `href`. An empty document does not satisfy a required field. Nested content is limited to 20 levels.
+
+The shared renderer displays rich text in draft previews, reviews, and public pages without injecting HTML. Titles and button labels render formatting inline; body and external fields support block formatting. Headless apps must parse the JSON and render supported nodes and marks themselves. Resolve icons through the field's captured configuration, escape text, and validate URLs. Published snapshots retain the document and its field options until republished. To add a different node or mark in a source fork, update `src/richtext.rs`, `web/src/admin/RichTextEditor.tsx`, and `web/src/components/RichText.tsx` together.
 
 ## Page paths and moves
 

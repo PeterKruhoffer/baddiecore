@@ -1,9 +1,29 @@
-export type FieldKind = "text" | "textarea" | "url";
+export type FieldKind = "text" | "textarea" | "url" | "richtext";
+export type RichTextFeature =
+  | "bold"
+  | "italic"
+  | "underline"
+  | "strike"
+  | "heading"
+  | "bullet_list"
+  | "ordered_list"
+  | "blockquote"
+  | "link";
+export interface RichTextIcon {
+  id: string;
+  label: string;
+  src: string;
+}
+export interface RichTextConfig {
+  features?: RichTextFeature[];
+  icons?: RichTextIcon[];
+}
 export interface Field {
   name: string;
   label: string;
   kind: FieldKind;
   required: boolean;
+  richtext?: RichTextConfig;
 }
 export type RendererName = "hero" | "text" | "callout" | "cards" | "external";
 export interface ComponentDef {

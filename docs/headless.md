@@ -24,7 +24,7 @@ curl --fail --silent --show-error "$CMS_URL/api/headless/content?slug=%2Fabout" 
 
 ## Register your app's components
 
-Choose a stable component ID, such as `shop-product-promo`, and keep it in your app's renderer map. Registration sends only the field schema, never JavaScript or HTML. The CMS supports `text`, `textarea`, and `url` string fields with required flags.
+Choose a stable component ID, such as `shop-product-promo`, and keep it in your app's renderer map. Registration sends only the field schema, never JavaScript or HTML. The CMS supports `text`, `textarea`, `url`, and `richtext` string fields with required flags. Rich-text strings contain Tiptap JSON; see [rich-text configuration and rendering](editing.md#configure-rich-text) for supported nodes, marks, and site icons.
 
 ```sh
 curl --fail --silent --show-error -X PUT \

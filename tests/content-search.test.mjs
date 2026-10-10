@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { searchContent } from "../web/src/admin/contentSearch.ts";
 
-const components = [{ id: "hero", name: "Hero banner", description: "Opening promotion" }];
+const components = [{ id: "hero", name: "Hero banner", description: "Opening promotion", fields: [] }];
 const templates = [{ id: "article", name: "Article", description: "Editorial layout" }];
 const pages = [
   { id: "home", title: "Welcome", slug: "/", blocks: [{ id: "intro", component_id: "hero", fields: { heading: "Visit Copenhagen", body: "Fresh bread every morning" } }] },
@@ -50,4 +50,19 @@ test("long content snippets include the matched text rather than just the beginn
   const result = searchContent("needle", [{ ...pages[0], blocks: [{ ...pages[0].blocks[0], fields: { body: `${"prefix ".repeat(80)}needle ${"suffix ".repeat(80)}` } }] }], components, []);
   assert.match(result[0].detail, /….*needle.*…/);
   assert.ok(result[0].detail.length < 160);
+});
+
+test("rich text searches visible copy across marks and icon labels, not JSON metadata", () => {
+  const definitions = [{ ...components[0], fields: [{ name: "body", kind: "richtext", richtext: { icons: [{ id: "brand-star", label: "Site star", src: "/assets/star.svg" }] } }] }];
+  const document = JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [
+    { type: "text", text: "Copen" },
+    { type: "text", text: "hagen", marks: [{ type: "bold" }] },
+    { type: "hardBreak" },
+    { type: "icon", attrs: { id: "brand-star" } },
+  ] }] });
+  const richPages = [{ ...pages[0], blocks: [{ ...pages[0].blocks[0], fields: { body: document } }] }];
+  assert.equal(searchContent("copenhagen", richPages, definitions, [])[0].detail, "/ · Copenhagen Site star");
+  assert.equal(searchContent("site star", richPages, definitions, [])[0].blockId, "intro");
+  assert.deepEqual(searchContent("paragraph", richPages, definitions, []), []);
+  assert.deepEqual(searchContent("brand-star", richPages, definitions, []), []);
 });
