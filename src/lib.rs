@@ -24,6 +24,7 @@ use uuid::Uuid;
 pub mod auth;
 pub mod headless;
 mod package;
+pub mod richtext;
 pub mod serialization;
 pub mod workflow;
 
@@ -33,6 +34,8 @@ pub struct Field {
     pub label: String,
     pub kind: FieldKind,
     pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub richtext: Option<richtext::Config>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +43,7 @@ pub enum FieldKind {
     Text,
     Textarea,
     Url,
+    Richtext,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Component {
@@ -249,7 +253,7 @@ fn seed(db: &Pool) -> Result<()> {
                 vec![
                     ("eyebrow", false, FieldKind::Text),
                     ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
+                    ("body", false, FieldKind::Richtext),
                     ("button_label", false, FieldKind::Text),
                     ("button_url", false, FieldKind::Url),
                 ],
@@ -260,7 +264,7 @@ fn seed(db: &Pool) -> Result<()> {
                 Renderer::Text,
                 vec![
                     ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
+                    ("body", false, FieldKind::Richtext),
                 ],
             ),
             (
@@ -269,7 +273,7 @@ fn seed(db: &Pool) -> Result<()> {
                 Renderer::Callout,
                 vec![
                     ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
+                    ("body", false, FieldKind::Richtext),
                     ("button_label", false, FieldKind::Text),
                     ("button_url", false, FieldKind::Url),
                 ],
@@ -298,6 +302,7 @@ fn seed(db: &Pool) -> Result<()> {
                         label: title_case(name),
                         kind,
                         required,
+                        richtext: None,
                     })
                     .collect(),
             };
@@ -1133,6 +1138,12 @@ fn validate_block(block: &Block, component: &Component) -> Result<()> {
         if matches!(field.kind, FieldKind::Url) && !value.is_empty() {
             validate_url(value)?;
         }
+        if matches!(field.kind, FieldKind::Richtext) {
+            let has_content = richtext::validate(value, field.richtext.as_ref())?;
+            if field.required && !has_content {
+                return Err(ApiError::bad(format!("field {} is required", field.name)));
+            }
+        }
     }
     Ok(())
 }
@@ -1147,6 +1158,12 @@ fn validate_component(item: &Component) -> Result<()> {
             || !names.insert(&field.name)
         {
             return Err(ApiError::bad("field names must be non-empty and unique"));
+        }
+        if let Some(config) = &field.richtext {
+            if !matches!(field.kind, FieldKind::Richtext) {
+                return Err(ApiError::bad("richtext options require a richtext field"));
+            }
+            config.validate()?;
         }
     }
     Ok(())

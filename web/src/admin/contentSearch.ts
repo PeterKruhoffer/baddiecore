@@ -1,4 +1,5 @@
 import type { ComponentDef, Page, Template } from "../types";
+import { richTextPlainText } from "../lib/richtext.ts";
 
 export type ContentSearchResult =
   | { kind: "page"; pageId: string; title: string; detail: string }
@@ -19,15 +20,23 @@ export function searchContent(
     const normalized = text.toLocaleLowerCase();
     return terms.every((term) => normalized.includes(term));
   };
-  const componentNames = new Map(components.map((component) => [component.id, component.name]));
+  const definitions = new Map(components.map((component) => [component.id, component]));
   const results: ContentSearchResult[] = [];
   for (const page of pages) {
     if (matches(`${page.title} ${page.slug}`)) {
       results.push({ kind: "page", pageId: page.id, title: page.title, detail: page.slug });
     }
     for (const block of page.blocks) {
-      const name = componentNames.get(block.component_id) ?? "Unknown component";
-      const text = Object.values(block.fields).join(" ").replace(/\s+/g, " ").trim();
+      const definition = definitions.get(block.component_id);
+      const name = definition?.name ?? "Unknown component";
+      const text = Object.entries(block.fields)
+        .map(([key, value]) => {
+          const field = definition?.fields.find((field) => field.name === key);
+          return field?.kind === "richtext" ? richTextPlainText(value, field.richtext) : value;
+        })
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
       // Page context helps qualify content queries, but title-only matches belong to the page.
       const content = `${name} ${text}`;
       if (

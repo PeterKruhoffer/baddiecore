@@ -2,6 +2,8 @@ import { For, Show } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import * as stylex from "@stylexjs/stylex";
 import type { Block, ComponentDef, RendererName } from "../types";
+import { RichText, RichTextNode } from "./RichText";
+import { richTextDocument, safeHref } from "../lib/richtext";
 import { common } from "../common.stylex";
 const styles = stylex.create({
   render: { padding: "70px clamp(30px, 8vw, 90px)" },
@@ -56,19 +58,30 @@ const styles = stylex.create({
   },
 });
 type Props = { block: Block; definition: ComponentDef };
-function safeHref(href?: string) {
-  // Reject control characters before URL parsing can normalize them away.
-  // oxlint-disable-next-line no-control-regex
-  if (!href || /[\u0000-\u001f\u007f\\]/.test(href) || /^\s*\/\//.test(href)) return;
-  try {
-    const url = new URL(href, "https://example.invalid");
-    if (
-      url.protocol === "http:" ||
-      url.protocol === "https:" ||
-      (url.origin === "https://example.invalid" && url.protocol === "https:")
-    )
-      return href;
-  } catch {}
+function FieldValue(p: Props & { name: string; inline?: boolean; fallback?: string }) {
+  const field = () => p.definition.fields.find((field) => field.name === p.name);
+  const value = () => p.block.fields[p.name] || p.fallback || "";
+  return (
+    <Show when={field()?.kind === "richtext"} fallback={value()}>
+      <RichText value={value()} config={field()?.richtext} inline={p.inline} />
+    </Show>
+  );
+}
+function Body(p: Props & { callout?: boolean }) {
+  return (
+    <Show
+      when={p.definition.fields.find((f) => f.name === "body")?.kind === "richtext"}
+      fallback={
+        <p {...stylex.attrs(styles.paragraph, p.callout && styles.calloutParagraph)}>
+          {p.block.fields.body}
+        </p>
+      }
+    >
+      <div {...stylex.attrs(styles.paragraph, p.callout && styles.calloutParagraph)}>
+        <FieldValue {...p} name="body" />
+      </div>
+    </Show>
+  );
 }
 const Link = (p: { href?: string; children: JSX.Element }) => (
   <Show when={safeHref(p.href)}>
@@ -93,40 +106,64 @@ export function blocksInTemplateOrder(blocks: Block[], regions: { name: string }
 export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
   hero: (p) => (
     <section {...stylex.attrs(styles.render, styles.hero)}>
-      <p {...stylex.attrs(common.eyebrow, styles.paragraph)}>{p.block.fields.eyebrow}</p>
+      <p {...stylex.attrs(common.eyebrow, styles.paragraph)}>
+        <FieldValue {...p} name="eyebrow" inline />
+      </p>
       <h1 {...stylex.attrs(styles.heading, styles.h1)}>
-        {p.block.fields.title || "Untitled hero"}
+        <FieldValue {...p} name="title" inline fallback="Untitled hero" />
       </h1>
-      <p {...stylex.attrs(styles.paragraph)}>{p.block.fields.body}</p>
-      <Link href={p.block.fields.button_url}>{p.block.fields.button_label}</Link>
+      <Body {...p} />
+      <Link href={p.block.fields.button_url}>
+        <FieldValue {...p} name="button_label" inline />
+      </Link>
     </section>
   ),
   text: (p) => (
     <section {...stylex.attrs(styles.render, styles.text)}>
       <h2 {...stylex.attrs(styles.heading, styles.h2)}>
-        {p.block.fields.title || "Untitled section"}
+        <FieldValue {...p} name="title" inline fallback="Untitled section" />
       </h2>
-      <p {...stylex.attrs(styles.paragraph)}>{p.block.fields.body}</p>
+      <Body {...p} />
     </section>
   ),
   callout: (p) => (
     <section {...stylex.attrs(styles.render, styles.callout)}>
       <div>
         <h2 {...stylex.attrs(styles.heading, styles.h2)}>
-          {p.block.fields.title || "A useful callout"}
+          <FieldValue {...p} name="title" inline fallback="A useful callout" />
         </h2>
-        <p {...stylex.attrs(styles.paragraph, styles.calloutParagraph)}>{p.block.fields.body}</p>
+        <Body {...p} callout />
       </div>
-      <Link href={p.block.fields.button_url}>{p.block.fields.button_label}</Link>
+      <Link href={p.block.fields.button_url}>
+        <FieldValue {...p} name="button_label" inline />
+      </Link>
     </section>
   ),
   cards: (p) => (
     <section {...stylex.attrs(styles.render, styles.cards)}>
-      <h2 {...stylex.attrs(styles.heading, styles.h2)}>{p.block.fields.title || "Cards"}</h2>
+      <h2 {...stylex.attrs(styles.heading, styles.h2)}>
+        <FieldValue {...p} name="title" inline fallback="Cards" />
+      </h2>
       <div {...stylex.attrs(styles.cardGrid)}>
-        <For each={p.block.fields.body?.split("\n").filter(Boolean) || ["Add one card per line"]}>
-          {(item) => <article {...stylex.attrs(styles.card)}>{item}</article>}
-        </For>
+        <Show
+          when={p.definition.fields.find((f) => f.name === "body")?.kind !== "richtext"}
+          fallback={
+            <For each={richTextDocument(p.block.fields.body ?? "").content}>
+              {(node) => (
+                <article {...stylex.attrs(styles.card)}>
+                  <RichTextNode
+                    node={node}
+                    config={p.definition.fields.find((f) => f.name === "body")?.richtext}
+                  />
+                </article>
+              )}
+            </For>
+          }
+        >
+          <For each={p.block.fields.body?.split("\n").filter(Boolean) || ["Add one card per line"]}>
+            {(item) => <article {...stylex.attrs(styles.card)}>{item}</article>}
+          </For>
+        </Show>
       </div>
     </section>
   ),
@@ -144,7 +181,9 @@ export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
               <dt>
                 <strong>{field.label}</strong>
               </dt>
-              <dd {...stylex.attrs(styles.paragraph)}>{p.block.fields[field.name] || "Not set"}</dd>
+              <dd {...stylex.attrs(styles.paragraph)}>
+                <FieldValue {...p} name={field.name} fallback="Not set" />
+              </dd>
             </>
           )}
         </For>

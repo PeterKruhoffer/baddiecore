@@ -1,6 +1,6 @@
 import { expect, test, type Page as BrowserPage } from "@playwright/test";
 import { bootstrap } from "./admin-fixture";
-import type { Bootstrap, Page, Template } from "../src/types";
+import type { Bootstrap, ComponentDef, Page, Template } from "../src/types";
 
 const organization = {
   revision: 1,
@@ -69,6 +69,10 @@ async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
     }
     if (url === "/api/admin/templates/campaign" && req.method() === "PUT") {
       data.templates[1] = body;
+      return route.fulfill({ json: body });
+    }
+    if (url === "/api/admin/components/hero" && req.method() === "PUT") {
+      data.components[0] = body as ComponentDef;
       return route.fulfill({ json: body });
     }
     return route.fulfill({ status: 500, json: { error: `Unexpected test request: ${url}` } });
@@ -523,4 +527,341 @@ test("members change their own password and admins add members with passwords", 
   await expect.poll(() => writes.at(-1)?.url).toBe("/api/admin/members/casey/password");
   expect(writes.at(-2)?.body.members.map((m: { id: string }) => m.id)).toEqual(["admin", "casey"]);
   expect(writes.at(-1)?.body).toEqual({ password: "casey-password" });
+});
+
+test("rich text preserves legacy copy, formatting, links, icons and undo across saves and selection", async ({
+  page,
+}) => {
+  const data = bootstrap();
+  data.components[0].fields[2].kind = "richtext";
+  data.components[0].fields[2].richtext = {
+    icons: [{ id: "star", label: "Site star", src: "/assets/star.svg" }],
+  };
+  await page.route("**/assets/star.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#2563eb" d="m12 1 3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1z"/></svg>',
+    }),
+  );
+  const state = await openWorkspace(page, data);
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  const body = page.getByRole("textbox", { name: "Body", exact: true });
+  const preview = page.getByRole("main");
+  await expect(body).toHaveText("Build, edit and publish with a CMS you own.");
+  await body.fill("A CMS you own");
+  await body.pressSequentially(".");
+  await expect(body).toBeFocused();
+  await body.press("Control+a");
+  await page.getByRole("button", { name: "Bold", exact: true }).click();
+  await expect(preview.locator("strong")).toHaveText("A CMS you own.");
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(preview.locator("strong")).toHaveCount(0);
+  await page.getByRole("button", { name: "Redo", exact: true }).click();
+  await expect(preview.locator("strong")).toHaveText("A CMS you own.");
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  await page.getByRole("radio", { name: "External link", exact: true }).check();
+  await page.getByRole("textbox", { name: "Link URL", exact: true }).fill("javascript:alert(1)");
+  await page.getByRole("button", { name: "Apply link", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Enter a full http:// or https:// URL");
+  if (process.env.UI_SCREENSHOTS_DIR)
+    await page
+      .getByRole("group", { name: "Body formatting" })
+      .locator("..")
+      .screenshot({ path: `${process.env.UI_SCREENSHOTS_DIR}/richtext-link-error.png` });
+  await page.getByRole("radio", { name: "Site link", exact: true }).check();
+  await page.getByRole("combobox", { name: "Site page", exact: true }).selectOption("custom");
+  await page.getByRole("textbox", { name: "Link URL", exact: true }).fill("/about");
+  await page.getByRole("button", { name: "Apply link", exact: true }).click();
+  await expect(preview.getByRole("link", { name: "A CMS you own." })).toHaveAttribute(
+    "href",
+    "/about",
+  );
+  await page.getByRole("combobox", { name: "Text style" }).selectOption("3");
+  await expect(preview.getByRole("heading", { name: "A CMS you own.", level: 3 })).toBeVisible();
+  await page.getByRole("combobox", { name: "Text style" }).selectOption("paragraph");
+  await expect(preview.getByRole("heading", { name: "A CMS you own.", level: 3 })).toHaveCount(0);
+  await body.locator("strong").click();
+  await body.press("End");
+  await page.getByRole("combobox", { name: "Insert site icon" }).selectOption("star");
+  await expect(preview.getByRole("img", { name: "Site star" })).toBeVisible();
+  await page.getByRole("button", { name: "Bullet list", exact: true }).click();
+  await expect(preview.locator("ul li")).toContainText("A CMS you own.");
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await expect(page.getByText("Saved draft · Revision 13", { exact: true })).toBeVisible();
+  const doc = JSON.parse(state.writes[0].body.blocks[0].fields.body);
+  expect(doc.content[0].type).toBe("bulletList");
+  expect(doc.content[0].content[0].content[0].content).toContainEqual({
+    type: "icon",
+    attrs: { id: "star" },
+  });
+  await capture(page, "richtext-editor");
+  await preview.getByRole("heading", { name: "Built around your content." }).click();
+  await preview.getByRole("heading", { name: "A home for your next idea." }).click();
+  await expect(body.locator("strong")).toHaveText("A CMS you own.");
+  await expect(body.getByRole("img", { name: "Site star" })).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await expect(body.locator("strong")).toHaveText("A CMS you own.");
+});
+
+test("editors can pick a site page, add an external link, and edit or remove links without changing other text", async ({
+  page,
+}) => {
+  const data = bootstrap("editor");
+  data.components[0].fields[2].kind = "richtext";
+  data.pages[0].blocks[0].fields.body = "Meet our team. Read the guide.";
+  await openWorkspace(page, data);
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  const body = page.getByRole("textbox", { name: "Body", exact: true });
+  await expect(body).toHaveText("Meet our team. Read the guide.");
+  const selectText = async (text: string) => {
+    await body.focus();
+    await body.evaluate((element, text) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const start = node.textContent!.indexOf(text);
+        if (start < 0) continue;
+        window.getSelection()!.setBaseAndExtent(node, start, node, start + text.length);
+        return;
+      }
+      throw new Error(`Text not found: ${text}`);
+    }, text);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe(text);
+  };
+  await selectText("our team");
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  const picker = page.getByRole("combobox", { name: "Site page", exact: true });
+  await picker.selectOption("/about/team");
+  await expect(page.getByText("Publish this page before readers can visit it.")).toBeVisible();
+  await page.getByRole("button", { name: "Apply link", exact: true }).click();
+  await expect(body.getByRole("link", { name: "our team", exact: true })).toHaveAttribute(
+    "href",
+    "/about/team",
+  );
+  await selectText("the guide");
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  await page.getByRole("radio", { name: "External link", exact: true }).check();
+  await page
+    .getByRole("textbox", { name: "Link URL", exact: true })
+    .fill(" https://example.org/guide?topic=cms#editing ");
+  await page.getByRole("button", { name: "Apply link", exact: true }).click();
+  await expect(body.getByRole("link", { name: "the guide", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.org/guide?topic=cms#editing",
+  );
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await expect(page.getByText("Saved draft · Revision 13", { exact: true })).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await expect(body.getByRole("link", { name: "our team", exact: true })).toHaveAttribute(
+    "href",
+    "/about/team",
+  );
+  await expect(body.getByRole("link", { name: "the guide", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.org/guide?topic=cms#editing",
+  );
+  await body.getByRole("link", { name: "our team", exact: true }).click();
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  await expect(picker).toHaveValue("/about/team");
+  await picker.selectOption("/");
+  await page.getByRole("button", { name: "Apply link", exact: true }).click();
+  await expect(body.getByRole("link", { name: "our team", exact: true })).toHaveAttribute(
+    "href",
+    "/",
+  );
+  await body.getByRole("link", { name: "the guide", exact: true }).click();
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "External link", exact: true })).toBeChecked();
+  await expect(page.getByRole("textbox", { name: "Link URL", exact: true })).toHaveValue(
+    "https://example.org/guide?topic=cms#editing",
+  );
+  await page
+    .getByRole("textbox", { name: "Link URL", exact: true })
+    .fill("https://example.org/changed");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("group", { name: "Edit link" })).toHaveCount(0);
+  await expect(body).toBeFocused();
+  await expect(body.getByRole("link", { name: "the guide", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.org/guide?topic=cms#editing",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Link", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Remove link", exact: true }).click();
+  await expect(body.getByRole("link", { name: "the guide", exact: true })).toHaveCount(0);
+  await expect(body.getByRole("link", { name: "our team", exact: true })).toHaveAttribute(
+    "href",
+    "/",
+  );
+  await expect(body).toHaveText("Meet our team. Read the guide.");
+});
+
+test("rich text configuration saves disabled controls and site icons without losing field identity", async ({
+  page,
+}) => {
+  const state = await openWorkspace(page);
+  await page.getByRole("button", { name: "Expand Components" }).click();
+  await page.getByRole("button", { name: "Hero", exact: true }).click();
+  await page.getByRole("combobox", { name: "Type", exact: true }).nth(2).selectOption("richtext");
+  const options = page.getByRole("group", { name: "Body rich text options" });
+  await options.getByRole("checkbox", { name: "Headings", exact: true }).uncheck();
+  await options.getByRole("checkbox", { name: "Strikethrough", exact: true }).uncheck();
+  await options.getByRole("button", { name: "Add site icon" }).click();
+  await options.getByRole("textbox", { name: "Icon ID" }).fill("brand-star");
+  await options.getByRole("textbox", { name: "Icon label" }).fill("Brand star");
+  await options.getByRole("textbox", { name: "Icon image URL" }).fill("/assets/icons/star.svg");
+  if (process.env.UI_SCREENSHOTS_DIR)
+    await options
+      .locator("..")
+      .screenshot({ path: `${process.env.UI_SCREENSHOTS_DIR}/richtext-settings.png` });
+  await page.getByRole("button", { name: "Save component", exact: true }).first().click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  expect(state.writes[0].body.fields[2]).toEqual({
+    name: "body",
+    label: "Body",
+    kind: "richtext",
+    required: false,
+    richtext: {
+      features: [
+        "bold",
+        "italic",
+        "underline",
+        "bullet_list",
+        "ordered_list",
+        "blockquote",
+        "link",
+      ],
+      icons: [{ id: "brand-star", label: "Brand star", src: "/assets/icons/star.svg" }],
+    },
+  });
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Text style", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Strikethrough", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "Insert site icon" }).locator("option"),
+  ).toHaveText(["Site icon", "Brand star"]);
+});
+
+test("restricted rich text removes disabled paste formatting and shortcuts and fits narrow screens", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = bootstrap();
+  data.components[0].fields[2] = {
+    ...data.components[0].fields[2],
+    kind: "richtext",
+    richtext: { features: ["italic"], icons: [] },
+  };
+  const state = await openWorkspace(page, data);
+  await page.getByRole("button", { name: "Navigation", exact: true }).click();
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  const body = page.getByRole("textbox", { name: "Body", exact: true });
+  await expect(page.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
+  await body.fill("Plain copy");
+  await body.press("Control+a");
+  await body.press("Control+b");
+  await expect(body.locator("strong")).toHaveCount(0);
+  await body.evaluate((element) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData(
+      "text/html",
+      '<p><strong>Pasted bold</strong> <em>and italic</em> <a href="javascript:alert(1)">unsafe link</a><img src="/unregistered.svg"></p>',
+    );
+    element.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+    );
+  });
+  await expect(body).toHaveText("Pasted bold and italic unsafe link");
+  await expect(body.locator("em")).toHaveText("and italic");
+  await expect(body.locator("strong, a, img")).toHaveCount(0);
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await expect(page.getByText("Saved draft · Revision 13", { exact: true })).toBeVisible();
+  expect(JSON.parse(state.writes[0].body.blocks[0].fields.body).content[0].content).toEqual([
+    { type: "text", text: "Pasted bold " },
+    { type: "text", text: "and italic", marks: [{ type: "italic" }] },
+    { type: "text", text: " unsafe link" },
+  ]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await body.focus();
+  await body.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await expect(body).toBeFocused();
+  if (process.env.UI_SCREENSHOTS_DIR)
+    await page.screenshot({ path: `${process.env.UI_SCREENSHOTS_DIR}/richtext-narrow.png` });
+});
+
+test("published rich text renders semantic content and escapes literal HTML", async ({ page }) => {
+  const data = bootstrap();
+  const field = data.components[0].fields[2];
+  field.kind = "richtext";
+  field.richtext = { icons: [{ id: "star", label: "Site star", src: "/assets/star.svg" }] };
+  data.pages[0].blocks[0].fields.body = JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "heading",
+        attrs: { level: 3 },
+        content: [{ type: "text", text: "Made for your site" }],
+      },
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "Own your content",
+            marks: [
+              { type: "bold" },
+              { type: "italic" },
+              { type: "link", attrs: { href: "/about" } },
+            ],
+          },
+          { type: "text", text: " " },
+          { type: "icon", attrs: { id: "star" } },
+        ],
+      },
+      {
+        type: "orderedList",
+        attrs: { start: 4, type: "a" },
+        content: [
+          {
+            type: "listItem",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "Choose your formatting" }] },
+            ],
+          },
+        ],
+      },
+      {
+        type: "blockquote",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: '<script>alert("literal")</script>' }],
+          },
+        ],
+      },
+    ],
+  });
+  await page.route("**/api/content?**", (route) =>
+    route.fulfill({
+      json: { page: data.pages[0], template: data.templates[0], components: data.components },
+    }),
+  );
+  await page.route("**/assets/star.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#2563eb" d="m12 1 3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1z"/></svg>',
+    }),
+  );
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Made for your site", level: 3 })).toBeVisible();
+  await expect(page.locator("a em strong")).toHaveText("Own your content");
+  await expect(page.locator("ol")).toHaveAttribute("start", "4");
+  await expect(page.locator("ol")).toHaveAttribute("type", "a");
+  await expect(page.locator("blockquote")).toHaveText('<script>alert("literal")</script>');
+  await expect(page.locator("main script")).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Site star" })).toBeVisible();
+  await capture(page, "richtext-public");
 });
