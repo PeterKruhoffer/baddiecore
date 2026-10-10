@@ -580,10 +580,27 @@ test("rich text preserves legacy copy, formatting, links, icons and undo across 
   await expect(preview.getByRole("heading", { name: "A CMS you own.", level: 3 })).toBeVisible();
   await page.getByRole("combobox", { name: "Text style" }).selectOption("paragraph");
   await expect(preview.getByRole("heading", { name: "A CMS you own.", level: 3 })).toHaveCount(0);
+  await expect(body).toBeFocused();
   await body.locator("strong").click();
   await body.press("End");
-  await page.getByRole("combobox", { name: "Insert site icon" }).selectOption("star");
+  await expect
+    .poll(() =>
+      body.evaluate((element) => {
+        const selection = window.getSelection();
+        const text = element.querySelector("strong")?.firstChild;
+        return (
+          selection?.isCollapsed &&
+          selection.anchorNode === text &&
+          selection.anchorOffset === text?.textContent?.length
+        );
+      }),
+    )
+    .toBe(true);
+  const iconPicker = page.getByRole("combobox", { name: "Insert site icon" });
+  await iconPicker.focus();
+  await iconPicker.selectOption("star");
   await expect(preview.getByRole("img", { name: "Site star" })).toBeVisible();
+  await expect(body).toBeFocused();
   await page.getByRole("button", { name: "Bullet list", exact: true }).click();
   await expect(preview.locator("ul li")).toContainText("A CMS you own.");
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
