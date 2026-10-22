@@ -24,7 +24,7 @@ use crate::{
     serialization::{
         self, DefinitionPolicy, Items, MAX_FILE_SIZE, Merged, export_files, export_path,
     },
-    validate_slug,
+    validate_slug, workflow,
 };
 
 const MAX_ENTRIES: usize = 10_000;
@@ -44,7 +44,7 @@ pub(crate) async fn export(
     let path = query.path;
     validate_slug(&path)?;
     let filename = package_filename(&path);
-    let bytes = state
+    let data = state
         .run_as(editor, move |db, access| {
             access.admin()?;
             let mut data = load_data(db, true)?;
@@ -74,6 +74,12 @@ pub(crate) async fn export(
                 .collect();
             data.components
                 .retain(|c| components.contains(c.id.as_str()));
+            Ok(data)
+        })
+        .await?;
+    // Encode and compress outside the lock so other editors do not wait on it.
+    let bytes = state
+        .blocking(move |_| {
             let files = export_files(&data.components, &data.templates, &data.pages)
                 .map_err(|e| ApiError::bad(e.0))?;
             zip_files(&files)
@@ -99,14 +105,23 @@ pub(crate) async fn install(
     Extension(editor): Extension<auth::Editor>,
     body: Bytes,
 ) -> Result<Json<Merged>> {
-    state
-        .run_as(editor, move |db, access| {
-            access.admin()?;
-            // Unpack only after the admin check, so others cannot make the server inflate archives.
+    // Unpack only after the admin check, so others cannot make the server inflate archives.
+    // Unpacking happens outside the lock so other editors do not wait on it.
+    let checked = editor.clone();
+    let items = state
+        .read(move |db| {
+            workflow::access(db, checked)?.admin()?;
             let items = unzip(&body).map_err(|e| ApiError::bad(e.0))?;
             if items.pages() == 0 {
                 return Err(ApiError::bad("package contains no pages"));
             }
+            Ok(items)
+        })
+        .await?;
+    state
+        .run_as(editor, move |db, access| {
+            // Recheck under the lock, so access revoked while unpacking still applies.
+            access.admin()?;
             Ok(Json(serialization::merge_items(
                 db,
                 items,

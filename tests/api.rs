@@ -3162,15 +3162,11 @@ async fn packages_are_admin_only() {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let response = raw_call(
-            &members,
-            "POST",
-            "/api/admin/package",
-            cookie,
-            package.clone(),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // Junk gets 403, not 400: non-admins are refused before the server unzips anything.
+        for body in [package.clone(), b"not a zip".to_vec()] {
+            let response = raw_call(&members, "POST", "/api/admin/package", cookie, body).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
     }
     let response = raw_call(&members, "POST", "/api/admin/package", "admin", package).await;
     assert_eq!(response.status(), StatusCode::OK);
