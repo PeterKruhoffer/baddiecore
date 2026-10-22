@@ -119,7 +119,10 @@ pub struct Content {
 pub struct AppState {
     db: Pool,
     auth: Arc<dyn auth::AuthProvider>,
-    database_slots: Arc<Semaphore>,
+    /// Admin and CLI-style jobs that wait on the `cms_lock` row.
+    locked_slots: Arc<Semaphore>,
+    /// Lock-free reads: public content, alias lookups and health checks.
+    read_slots: Arc<Semaphore>,
     origin: auth::OriginPolicy,
     headless: headless::ApiKeys,
 }
@@ -152,7 +155,7 @@ impl AppState {
         admin_password: Option<String>,
         secure_cookie: bool,
     ) -> std::result::Result<Self, String> {
-        let db = connect(database_url)?;
+        let db = connect(database_url, 2 * DATABASE_JOBS)?;
         let auth = auth::Auth::new(db.clone(), secure_cookie)?;
         let state = Self::with_pool(db, Arc::new(auth))?;
         state
@@ -165,25 +168,37 @@ impl AppState {
         database_url: &str,
         auth: Arc<dyn auth::AuthProvider>,
     ) -> std::result::Result<Self, String> {
-        Self::with_pool(connect(database_url)?, auth)
+        Self::with_pool(connect(database_url, 2 * DATABASE_JOBS)?, auth)
     }
 
     fn with_pool(db: Pool, auth: Arc<dyn auth::AuthProvider>) -> std::result::Result<Self, String> {
         let origin = auth.origin_policy()?;
         prepare(&db)?;
         // Bound running and queued blocking jobs independently of Tokio's thread pool.
+        // Locked jobs get their own limit, so waiting on the lock cannot starve reads.
         Ok(Self {
             db,
             auth,
-            database_slots: Arc::new(Semaphore::new(16)),
+            locked_slots: Arc::new(Semaphore::new(DATABASE_JOBS)),
+            read_slots: Arc::new(Semaphore::new(DATABASE_JOBS)),
             origin,
             headless: headless::ApiKeys::default(),
         })
     }
 }
 
-fn connect(database_url: &str) -> std::result::Result<Pool, String> {
+/// Limit on locked jobs, and separately on lock-free reads, per AppState.
+const DATABASE_JOBS: usize = 16;
+
+/// Fails when the URL's pool_max cannot give `min_connections` jobs a connection each.
+fn connect(database_url: &str, min_connections: usize) -> std::result::Result<Pool, String> {
     let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
+    let max = opts.get_pool_opts().constraints().max();
+    if max < min_connections {
+        return Err(format!(
+            "DATABASE_URL pool_max is {max}; it must be at least {min_connections} so every database job can get a connection"
+        ));
+    }
     Pool::new(opts).map_err(|e| {
         db_error(e);
         "could not connect to MySQL".into()
@@ -227,7 +242,7 @@ pub fn reset_admin(
     id: &str,
     password: &str,
 ) -> std::result::Result<(), String> {
-    let db = connect(database_url)?;
+    let db = connect(database_url, 1)?;
     prepare(&db)?;
     let hash = auth::hash_password_now(password).map_err(|e| e.1)?;
     database_transaction(&db, TransactionMode::Commit, |tx| {
@@ -384,8 +399,10 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
     {
-        self.blocking(move |db| database_transaction(db, TransactionMode::Commit, f))
-            .await
+        self.blocking(&self.locked_slots, move |db| {
+            database_transaction(db, TransactionMode::Commit, f)
+        })
+        .await
     }
 
     async fn read<T, F>(&self, f: F) -> Result<T>
@@ -393,25 +410,23 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&mut PooledConn) -> Result<T> + Send + 'static,
     {
-        self.blocking(move |db| f(&mut db.get_conn().map_err(db_error)?))
-            .await
+        self.blocking(&self.read_slots, move |db| {
+            f(&mut db.get_conn().map_err(db_error)?)
+        })
+        .await
     }
 
-    async fn blocking<T, F>(&self, f: F) -> Result<T>
+    async fn blocking<T, F>(&self, slots: &Arc<Semaphore>, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Pool) -> Result<T> + Send + 'static,
     {
-        let permit = self
-            .database_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                ApiError(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "database is busy; retry later".into(),
-                )
-            })?;
+        let permit = slots.clone().try_acquire_owned().map_err(|_| {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database is busy; retry later".into(),
+            )
+        })?;
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             // Keep the permit until the job ends, even if its HTTP request is cancelled.
@@ -1370,7 +1385,8 @@ mod tests {
         let state = AppState {
             db: pool.clone(),
             auth: Arc::new(auth::Auth::new(pool.clone(), false).unwrap()),
-            database_slots: Arc::new(Semaphore::new(1)),
+            locked_slots: Arc::new(Semaphore::new(1)),
+            read_slots: Arc::new(Semaphore::new(1)),
             origin: auth::OriginPolicy::from_env(false).unwrap(),
             headless: headless::ApiKeys::default(),
         };
@@ -1380,7 +1396,7 @@ mod tests {
             let state = state.clone();
             tokio::spawn(async move {
                 state
-                    .blocking(move |_| {
+                    .blocking(&state.locked_slots, move |_| {
                         started.send(()).unwrap();
                         wait.recv_timeout(Duration::from_secs(5)).unwrap();
                         Ok(())
@@ -1390,21 +1406,35 @@ mod tests {
         };
         ready.await.unwrap();
         assert_eq!(
-            state.blocking(|_| Ok(())).await.unwrap_err().0,
+            state
+                .blocking(&state.locked_slots, |_| Ok(()))
+                .await
+                .unwrap_err()
+                .0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         running.abort();
         assert!(running.await.unwrap_err().is_cancelled());
         assert_eq!(
-            state.blocking(|_| Ok(())).await.unwrap_err().0,
+            state
+                .blocking(&state.locked_slots, |_| Ok(()))
+                .await
+                .unwrap_err()
+                .0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         finish.send(()).unwrap();
-        let permit = tokio::time::timeout(Duration::from_secs(2), state.database_slots.acquire())
+        let permit = tokio::time::timeout(Duration::from_secs(2), state.locked_slots.acquire())
             .await
             .unwrap()
             .unwrap();
         drop(permit);
-        assert_eq!(state.blocking(|_| Ok(42)).await.unwrap(), 42);
+        assert_eq!(
+            state
+                .blocking(&state.locked_slots, |_| Ok(42))
+                .await
+                .unwrap(),
+            42
+        );
     }
 }
