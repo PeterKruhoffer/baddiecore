@@ -3489,6 +3489,28 @@ async fn failed_sign_ins_are_throttled_per_account() {
 }
 
 #[tokio::test]
+async fn concurrent_failed_sign_ins_cannot_exceed_the_limit() {
+    let app = setup().await;
+    let attempts: Vec<_> = (0..40)
+        .map(|_| {
+            let app = app.app.clone();
+            tokio::spawn(async move { login(&app, "admin", "wrong-password").await })
+        })
+        .collect();
+    let mut results = Vec::new();
+    for attempt in attempts {
+        results.push(attempt.await.unwrap());
+    }
+    let count = |status| results.iter().filter(|r| **r == Err(status)).count();
+    assert_eq!(count(StatusCode::UNAUTHORIZED), 5);
+    assert_eq!(count(StatusCode::TOO_MANY_REQUESTS), 35);
+    assert_eq!(
+        login(&app.app, "admin", PASSWORD).await,
+        Err(StatusCode::TOO_MANY_REQUESTS)
+    );
+}
+
+#[tokio::test]
 async fn startup_needs_an_administrator_and_reset_admin_recovers_access() {
     let db = TestDatabase::new();
     let dir = tempfile::tempdir().unwrap();

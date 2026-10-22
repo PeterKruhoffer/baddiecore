@@ -57,6 +57,7 @@ const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 const MAX_FAILURES: u32 = 5;
 const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_TRACKED_FAILURES: usize = 10_000;
+const MAX_USERNAME_CHARS: usize = 255;
 const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_PASSWORD_BYTES: usize = 1024;
 
@@ -100,20 +101,19 @@ impl Auth {
             })?
     }
 
-    /// Checks a password, counting failures per account to slow guessing.
+    /// Checks a password, counting attempts per account to slow guessing.
+    /// Each attempt is counted before verification so concurrent requests
+    /// cannot exceed the limit; a correct password clears the count.
     async fn check_password(&self, id: &str, password: String) -> Result<()> {
-        {
-            let mut failures = self.failures.lock().unwrap();
-            let now = Instant::now();
-            failures.retain(|_, (since, _)| now.duration_since(*since) < FAILURE_WINDOW);
-            if failures.len() >= MAX_TRACKED_FAILURES
-                || failures.get(id).is_some_and(|(_, n)| *n >= MAX_FAILURES)
-            {
-                return Err(ApiError(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "too many failed sign-ins; try again later".into(),
-                ));
-            }
+        let invalid = || {
+            ApiError(
+                StatusCode::UNAUTHORIZED,
+                "invalid username or password".into(),
+            )
+        };
+        // accounts.id is VARCHAR(255), so longer names never match and are not tracked.
+        if id.chars().count() > MAX_USERNAME_CHARS {
+            return Err(invalid());
         }
         let account = id.to_owned();
         let hash: Option<String> = self
@@ -123,18 +123,41 @@ impl Auth {
             })
             .await?;
         let known = hash.is_some();
-        let valid = verify(hash.unwrap_or_else(|| DUMMY_HASH.clone()), password).await?;
+        let tracked = {
+            let mut failures = self.failures.lock().unwrap();
+            let now = Instant::now();
+            failures.retain(|_, (since, _)| now.duration_since(*since) < FAILURE_WINDOW);
+            if failures.get(id).is_some_and(|(_, n)| *n >= MAX_FAILURES) {
+                return Err(ApiError(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many failed sign-ins; try again later".into(),
+                ));
+            }
+            // A flood of unknown names fills the map, but existing accounts,
+            // bounded by the accounts table, are always tracked.
+            let tracked =
+                known || failures.contains_key(id) || failures.len() < MAX_TRACKED_FAILURES;
+            if tracked {
+                failures.entry(id.to_owned()).or_insert((now, 0)).1 += 1;
+            }
+            tracked
+        };
+        let valid = verify(hash.unwrap_or_else(|| DUMMY_HASH.clone()), password).await;
         let mut failures = self.failures.lock().unwrap();
-        if known && valid {
-            failures.remove(id);
-            return Ok(());
+        match valid {
+            Ok(true) if known => {
+                failures.remove(id);
+                Ok(())
+            }
+            Ok(_) => Err(invalid()),
+            Err(e) => {
+                // The password was never checked, so release the reservation.
+                if let Some((_, n)) = failures.get_mut(id).filter(|_| tracked) {
+                    *n = n.saturating_sub(1);
+                }
+                Err(e)
+            }
         }
-        let entry = failures.entry(id.to_owned()).or_insert((Instant::now(), 0));
-        entry.1 += 1;
-        Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "invalid username or password".into(),
-        ))
     }
 
     async fn issue(&self, id: String, headers: &HeaderMap, response: &mut Response) -> Result<()> {
