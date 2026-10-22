@@ -32,8 +32,10 @@ impl TestDatabase {
         assert!(opts.get_db_name().is_none() && !base.contains('?'));
         // Tests create several independent app/CLI pools in parallel. Keep idle
         // connections at zero rather than exhausting MySQL's default limit.
-        let pool_query = "pool_min=0&pool_max=4";
-        let admin = Pool::new(Opts::from_url(&format!("{base}?{pool_query}")).unwrap()).unwrap();
+        // AppState requires room for 32 concurrent jobs.
+        let admin =
+            Pool::new(Opts::from_url(&format!("{base}?pool_min=0&pool_max=4")).unwrap()).unwrap();
+        let pool_query = "pool_min=0&pool_max=32";
         let name = format!("baddie_test_{}", uuid::Uuid::new_v4().simple());
         admin
             .get_conn()
@@ -938,6 +940,22 @@ fn databases_from_before_versioning_upgrade_to_the_current_schema() {
 }
 
 #[test]
+fn startup_requires_a_connection_for_every_database_job() {
+    let db = TestDatabase::new();
+    let small = db.url.replace("pool_max=32", "pool_max=31");
+    let error = AppState::open(&small, Some(PASSWORD.into()), false)
+        .err()
+        .expect("pool_max=31 was accepted");
+    assert!(
+        error.contains("pool_max") && error.contains("32"),
+        "{error}"
+    );
+    // Without pool_max the driver default of 100 applies.
+    let default = db.url.split('?').next().unwrap();
+    drop(AppState::open(default, Some(PASSWORD.into()), false).unwrap());
+}
+
+#[test]
 fn failed_seed_rolls_back_all_inserts() {
     let db = TestDatabase::new();
     drop(AppState::open(&db.url, Some(PASSWORD.into()), false).unwrap());
@@ -1011,6 +1029,103 @@ async fn public_reads_and_health_do_not_wait_for_editorial_transactions() {
     );
     tx.rollback().unwrap();
     assert_eq!(editorial.await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn editorial_lock_contention_leaves_public_site_available() {
+    let db = TestDatabase::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<html>CMS</html>").unwrap();
+    let app = router(
+        AppState::open(&db.url, Some(PASSWORD.into()), false).unwrap(),
+        dir.path(),
+    );
+    let login = call(
+        &app,
+        "POST",
+        "/api/login",
+        None,
+        Some(&json!({"username":"admin","password":PASSWORD})),
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE].to_str().unwrap();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let mut boot: Bootstrap = read(
+        call(
+            &app,
+            "GET",
+            "/api/admin/bootstrap",
+            Some(&cookie),
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    let page = boot.pages.remove(0);
+    let publish = format!("/api/admin/pages/{}/publish", page.id);
+    let body = json!({"revision":page.revision});
+    assert_eq!(
+        call(&app, "POST", &publish, Some(&cookie), Some(&body))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    let pool = Pool::new(Opts::from_url(&db.url).unwrap()).unwrap();
+    let mut conn = pool.get_conn().unwrap();
+    let mut tx = conn.start_transaction(mysql::TxOpts::default()).unwrap();
+    tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
+        .unwrap();
+    let mut queued = Vec::new();
+    for _ in 0..16 {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        queued.push(tokio::spawn(async move {
+            call(
+                &app,
+                "GET",
+                "/api/admin/bootstrap",
+                Some(&cookie),
+                None::<&Value>,
+            )
+            .await
+            .status()
+        }));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let waiting = "SELECT COUNT(*) FROM information_schema.processlist \
+        WHERE db=? AND info LIKE 'SELECT id FROM cms_lock%'";
+    let mut probe = pool.get_conn().unwrap();
+    while probe.exec_first::<i64, _, _>(waiting, (&db.name,)).unwrap() != Some(16) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "admin requests never queued on the lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // Editorial capacity is full, and says so instead of queueing more work.
+    let response = call(
+        &app,
+        "GET",
+        "/api/admin/bootstrap",
+        Some(&cookie),
+        None::<&Value>,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    for path in ["/health", "/api/content?slug=/", "/about", "/"] {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            call(&app, "GET", path, None, None::<&Value>),
+        )
+        .await
+        .expect("public request waited on the CMS lock");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+    tx.rollback().unwrap();
+    for request in queued {
+        assert_eq!(request.await.unwrap(), StatusCode::OK);
+    }
 }
 
 #[tokio::test]
