@@ -834,7 +834,8 @@ fn merge(
     for page in &pages {
         definitions.validate(page)?;
     }
-    crate::validate_route_paths(tx, &pages)?;
+    desired.retain(|page| old_by_id.get(page.id.as_str()) != Some(&page));
+    crate::claim_paths(tx, &desired)?;
     for paths in [
         &mut merged.created,
         &mut merged.updated,
