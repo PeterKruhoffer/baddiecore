@@ -94,11 +94,17 @@ impl AppState {
         F: FnOnce(&mut Transaction<'_>, Access) -> Result<T> + Send + 'static,
     {
         self.run(move |db| {
-            let access = resolve(organization(db)?, editor.id)?;
+            let access = access(db, editor)?;
             f(db, access)
         })
         .await
     }
+}
+
+/// Resolves the editor's current access. Outside the lock this is only a pre-check;
+/// recheck inside `run_as` before writing.
+pub(crate) fn access(db: &mut impl Queryable, editor: auth::Editor) -> Result<Access> {
+    resolve(organization(db)?, editor.id)
 }
 
 pub(super) fn initialize(db: &mut impl Queryable) -> Result<()> {
