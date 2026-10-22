@@ -1547,12 +1547,13 @@ async fn opening_an_older_database_indexes_existing_draft_aliases() {
     page.aliases = vec!["/offer".into()];
     let url = format!("/api/admin/pages/{}", page.id);
     read::<Page>(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
-    // Databases from before the page_paths table have only the pages table.
-    Pool::new(Opts::from_url(&app.db.url).unwrap())
+    // Databases from before the page_paths migration have neither the table nor its version.
+    let mut conn = Pool::new(Opts::from_url(&app.db.url).unwrap())
         .unwrap()
         .get_conn()
-        .unwrap()
-        .query_drop("DROP TABLE page_paths")
+        .unwrap();
+    conn.query_drop("DROP TABLE page_paths").unwrap();
+    conn.query_drop("DELETE FROM schema_migrations WHERE version=11")
         .unwrap();
     let reopened = router(
         AppState::open(&app.db.url, None, false).unwrap(),
