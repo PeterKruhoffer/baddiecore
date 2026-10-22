@@ -160,6 +160,9 @@ pub(super) async fn set_password(
     AxumPath(id): AxumPath<String>,
     Json(input): Json<NewPassword>,
 ) -> Result<StatusCode> {
+    state
+        .run_as(editor.clone(), |_, access| access.admin())
+        .await?;
     let hash = auth::hash_password(input.password).await?;
     state
         .run_as(editor, move |db, access| {
@@ -293,14 +296,30 @@ pub(super) async fn submit(
     AxumPath(id): AxumPath<String>,
     Json(input): Json<Revision>,
 ) -> Result<Json<Review>> {
-    state.run_as(editor, move |db, access| {
-        let page = require_page(db, &id)?;
-        access.page(&page.slug)?;
-        if page.revision != input.revision { return Err(ApiError::conflict("stale revision")); }
-        let review = Review { id: id.clone(), submission_id: Uuid::new_v4().to_string(), content: current_content(db, page)?, submitted_by: access.id, status: ReviewStatus::Submitted, feedback: String::new(), reviewed_by: None };
-        db.exec_drop("INSERT INTO reviews(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)", (&id, json(&review)?)).map_err(db_error)?;
-        Ok(Json(review))
-    }).await
+    state
+        .run_as(editor, move |db, access| {
+            let page = require_page(db, &id)?;
+            access.page(&page.slug)?;
+            if page.revision != input.revision {
+                return Err(ApiError::conflict("stale revision"));
+            }
+            let review = Review {
+                id: id.clone(),
+                submission_id: Uuid::new_v4().to_string(),
+                content: current_content(db, page)?,
+                submitted_by: access.id,
+                status: ReviewStatus::Submitted,
+                feedback: String::new(),
+                reviewed_by: None,
+            };
+            db.exec_drop(
+                "INSERT INTO reviews(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)",
+                (&id, json(&review)?),
+            )
+            .map_err(db_error)?;
+            Ok(Json(review))
+        })
+        .await
 }
 
 #[derive(Deserialize)]

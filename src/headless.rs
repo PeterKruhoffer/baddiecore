@@ -79,7 +79,9 @@ async fn require_key(State(state): State<AppState>, request: Request, next: Next
         .get(header::AUTHORIZATION)
         .filter(|_| headers.get_all(header::AUTHORIZATION).iter().count() == 1)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .and_then(|value| value.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+        .map(|(_, key)| key);
     let authorized = expected.zip(supplied).is_some_and(|(expected, supplied)| {
         let supplied: [u8; 32] = Sha256::digest(supplied.as_bytes()).into();
         bool::from(expected.ct_eq(&supplied))

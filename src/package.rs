@@ -13,7 +13,7 @@ use axum::{
     Extension, Json,
     body::Bytes,
     extract::{Query, State},
-    http::header,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
@@ -130,16 +130,20 @@ fn package_filename(path: &str) -> String {
 }
 
 fn zip_files(files: &[serialization::ExportFile<'_>]) -> Result<Vec<u8>> {
-    let failed = |_| ApiError::bad("could not write package");
+    let failed = || {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not write package".into(),
+        )
+    };
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     for (group, id, bytes) in files {
         zip.start_file(export_path(group, id), options)
-            .map_err(failed)?;
-        zip.write_all(bytes)
-            .map_err(|_| ApiError::bad("could not write package"))?;
+            .map_err(|_| failed())?;
+        zip.write_all(bytes).map_err(|_| failed())?;
     }
-    Ok(zip.finish().map_err(failed)?.into_inner())
+    Ok(zip.finish().map_err(|_| failed())?.into_inner())
 }
 
 fn unzip(bytes: &[u8]) -> std::result::Result<Items, serialization::Error> {
