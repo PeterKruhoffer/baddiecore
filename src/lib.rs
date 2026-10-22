@@ -221,14 +221,26 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS accounts(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, password_hash VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",    // 11: every draft slug and alias, so a write checks its own paths without loading every page. See claim_paths.
+    "CREATE TABLE IF NOT EXISTS page_paths(path VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, INDEX(page_id), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 ];
 
 /// Applies pending migrations, then creates the organization record and seed content when missing.
 fn prepare(db: &Pool) -> std::result::Result<(), String> {
     migrate(db).map_err(|_| "could not migrate MySQL schema")?;
-    database_transaction(db, TransactionMode::Commit, |tx| workflow::initialize(tx))
-        .map_err(|e| e.1)?;
+    database_transaction(db, TransactionMode::Commit, |tx| {
+        // One-time backfill for databases created before page_paths existed.
+        if tx
+            .query_first::<i64, _>("SELECT 1 FROM page_paths LIMIT 1")
+            .map_err(db_error)?
+            .is_none()
+        {
+            let pages: Vec<Page> = load_all(tx, "pages")?;
+            claim_paths(tx, &pages)?;
+        }
+        workflow::initialize(tx)
+    })
+    .map_err(|e| e.1)?;
     seed(db).map_err(|e| e.1)
 }
 
@@ -408,11 +420,8 @@ fn seed(db: &Pool) -> Result<()> {
             revision: 1,
             published_revision: None,
         };
-        tx.exec_drop(
-            "INSERT INTO pages(id,slug,data) VALUES(?,?,?)",
-            (&page.id, &page.slug, json(&page)?),
-        )
-        .map_err(db_error)?;
+        insert_page(tx, &page)?;
+        claim_paths(tx, &[page])?;
         serialization::record_base(tx, &components, &[template])
     })
 }
@@ -670,8 +679,7 @@ async fn create_page(
                 published_revision: None,
             };
             insert_page(db, &page)?;
-            let pages = load_all(db, "pages")?;
-            validate_route_paths(db, &pages)?;
+            claim_paths(db, std::slice::from_ref(&page))?;
             Ok((StatusCode::CREATED, Json(page)))
         })
         .await
@@ -730,10 +738,10 @@ async fn update_page(
                 if pages.iter().any(|p| !paths.insert(&p.slug)) {
                     return Err(ApiError::conflict("a destination path already exists"));
                 }
-                validate_route_paths(db, &pages)?;
+                changed.push(page.clone());
+                claim_paths(db, &changed)?;
                 // Temporary non-public paths permit moves to an ancestor without
                 // transient unique-key collisions. Snapshots remain untouched.
-                changed.push(page.clone());
                 for item in &changed {
                     db.exec_drop(
                         "UPDATE pages SET slug=? WHERE id=?",
@@ -755,8 +763,7 @@ async fn update_page(
                 (&page.slug, json(&page)?, id),
             )
             .map_err(constraint_error)?;
-            let pages = load_all(db, "pages")?;
-            validate_route_paths(db, &pages)?;
+            claim_paths(db, std::slice::from_ref(&page))?;
             Ok(Json(page))
         })
         .await
@@ -1229,36 +1236,47 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     }
     Ok(())
 }
-fn validate_route_paths(db: &mut impl Queryable, pages: &[Page]) -> Result<()> {
-    let mut paths = HashMap::new();
+/// Records the draft slugs and aliases of `pages`, which the caller is writing, in
+/// page_paths, after checking them against every other page's draft and published paths.
+fn claim_paths(db: &mut impl Queryable, pages: &[Page]) -> Result<()> {
+    for page in pages {
+        db.exec_drop("DELETE FROM page_paths WHERE page_id=?", (&page.id,))
+            .map_err(db_error)?;
+    }
     for page in pages {
         for path in std::iter::once(&page.slug).chain(&page.aliases) {
-            if paths.insert(path.as_str(), page.id.as_str()).is_some() {
-                return Err(ApiError::conflict("a page or alias already uses this path"));
+            db.exec_drop(
+                "INSERT INTO page_paths(path,page_id) VALUES(?,?)",
+                (path, &page.id),
+            )
+            .map_err(|error| match &error {
+                mysql::Error::MySqlError(e) if e.code == 1062 => {
+                    ApiError::conflict("a page or alias already uses this path")
+                }
+                _ => db_error(error),
+            })?;
+        }
+    }
+    for page in pages {
+        for path in std::iter::once(&page.slug).chain(&page.aliases) {
+            let owner: Option<String> = db
+                .exec_first("SELECT page_id FROM route_aliases WHERE slug=?", (path,))
+                .map_err(db_error)?;
+            if owner.is_some_and(|owner| owner != page.id) {
+                return Err(ApiError::conflict(
+                    "a published alias already uses this path",
+                ));
             }
         }
-    }
-    let published_aliases: Vec<(String, String)> = db
-        .query("SELECT slug,page_id FROM route_aliases")
-        .map_err(db_error)?;
-    for (path, owner) in published_aliases {
-        if paths.get(path.as_str()).is_some_and(|id| *id != owner) {
-            return Err(ApiError::conflict(
-                "a published alias already uses this path",
-            ));
-        }
-    }
-    let snapshots: Vec<(String, String)> = db
-        .query("SELECT slug,page_id FROM snapshots")
-        .map_err(db_error)?;
-    for page in pages {
-        if snapshots
-            .iter()
-            .any(|(path, owner)| owner != &page.id && page.aliases.contains(path))
-        {
-            return Err(ApiError::conflict(
-                "a published page already uses this alias path",
-            ));
+        for path in &page.aliases {
+            let owner: Option<String> = db
+                .exec_first("SELECT page_id FROM snapshots WHERE slug=?", (path,))
+                .map_err(db_error)?;
+            if owner.is_some_and(|owner| owner != page.id) {
+                return Err(ApiError::conflict(
+                    "a published page already uses this alias path",
+                ));
+            }
         }
     }
     Ok(())

@@ -1541,6 +1541,35 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
 }
 
 #[tokio::test]
+async fn opening_an_older_database_indexes_existing_draft_aliases() {
+    let app = setup().await;
+    let mut page = create_test_page(&app, "/first").await;
+    page.aliases = vec!["/offer".into()];
+    let url = format!("/api/admin/pages/{}", page.id);
+    read::<Page>(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    // Databases from before the page_paths table have only the pages table.
+    Pool::new(Opts::from_url(&app.db.url).unwrap())
+        .unwrap()
+        .get_conn()
+        .unwrap()
+        .query_drop("DROP TABLE page_paths")
+        .unwrap();
+    let reopened = router(
+        AppState::open(&app.db.url, None, false).unwrap(),
+        app._dir.path(),
+    );
+    let response = call(
+        &reopened,
+        "POST",
+        "/api/admin/pages",
+        Some(&app.cookie),
+        Some(&json!({"title":"Offer","slug":"/offer","template_id":"homepage"})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn editors_need_alias_path_grants_and_review_approval_publishes_aliases() {
     let app = setup().await;
     members(&app).await;
