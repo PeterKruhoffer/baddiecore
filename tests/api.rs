@@ -2541,6 +2541,26 @@ async fn headless_keys_are_disabled_by_default_and_cannot_cross_capabilities() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for (authorization, status) in [
+        (format!("bearer {CONTENT_KEY}"), StatusCode::OK),
+        (format!("BEARER {CONTENT_KEY}"), StatusCode::OK),
+        (format!("Basic {CONTENT_KEY}"), StatusCode::UNAUTHORIZED),
+        (format!("Bearer{CONTENT_KEY}"), StatusCode::UNAUTHORIZED),
+    ] {
+        let response = app
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/headless/pages")
+                    .header(header::AUTHORIZATION, authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
     assert_eq!(
         call(
             &app.app,
@@ -3358,18 +3378,21 @@ async fn local_accounts_sign_in_change_passwords_and_end_sessions() {
     .await;
     assert_eq!(access["access"]["id"], "editor");
     assert_eq!(access["access"]["role"], "editor");
-    assert_eq!(
-        call(
-            &app.app,
-            "PUT",
-            "/api/admin/members/admin/password",
-            Some(&editor),
-            Some(&json!({"password":"taken-over"})),
-        )
-        .await
-        .status(),
-        StatusCode::FORBIDDEN
-    );
+    // Non-admins are refused before the password is validated or hashed.
+    for password in ["taken-over", "short"] {
+        assert_eq!(
+            call(
+                &app.app,
+                "PUT",
+                "/api/admin/members/admin/password",
+                Some(&editor),
+                Some(&json!({ "password": password })),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 
     // Changing your own password needs the current one and ends other sessions.
     let other_editor = login(&app.app, "editor", "editor-password").await.unwrap();
