@@ -221,6 +221,9 @@ baddiecore reset-admin <username>
   Use it to create the first account or to recover access.
 
 Both stop when an item changed on both sides, until you choose a side with --force.
+The database keeps one sync record, not one per checkout or Git branch. After switching
+branches, files missing from that branch count as file-side deletions, so push deletes them
+from the database. Use one export directory per database and run status before pushing.
 Content pages are not synced; move them with packages in the admin UI. Directory defaults
 to baddiecore-content. DATABASE_URL must identify a directly accessible MySQL database."
     );

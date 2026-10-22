@@ -40,6 +40,6 @@ MySQL stores content in the `mysql_data` volume. **`docker compose down -v` dele
 - [Authentication](docs/authentication.md) covers local accounts, administrator recovery, and custom providers.
 - [Editing and publishing](docs/editing.md) covers pages, templates, route aliases, permissions, reviews, and moving pages between installations as zip packages.
 - [Headless integration](docs/headless.md) covers content API keys and registering your app's components.
-- [Content CLI](docs/content-cli.md) covers syncing templates and components with Git, including deletions.
+- [Content CLI](docs/content-cli.md) covers syncing templates and components with Git, including deletions. Each database keeps one sync record shared by all checkouts and branches, so read [branches and multiple checkouts](docs/content-cli.md#branches-and-multiple-checkouts) before pushing from more than one.
 - [Development and extensions](docs/development.md) covers local setup, tests, styles, and renderers.
 - [API contract](CONTRACT.md) defines the JSON models and endpoints.

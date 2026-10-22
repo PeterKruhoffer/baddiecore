@@ -25,7 +25,15 @@ Each installation remembers what it and the files agreed on at its last pull or 
 
 `push` never deletes a template or component that pages or templates on that installation still use. It stops with a message such as `template article is still used by page /news`; move those pages first. The admin UI applies the same rule when you delete a definition. Published pages keep their own copies, so deleting definitions never changes the live site.
 
-`pull` writes `baddiecore.yaml`, which marks the directory as an export. Commit it. `push` requires it, so run `pull` once to start. Neither command reads or changes content pages. A fresh installation counts its starter templates and components as already synced. Its first `push` therefore applies the repository's version, including deletions, instead of exporting the starter items back. Use one export directory per installation.
+`pull` writes `baddiecore.yaml`, which marks the directory as an export. Commit it. `push` requires it, so run `pull` once to start. Neither command reads or changes content pages. A fresh installation counts its starter templates and components as already synced. Its first `push` therefore applies the repository's version, including deletions, instead of exporting the starter items back.
+
+### Branches and multiple checkouts
+
+An installation keeps one sync record. It doesn't know about Git branches or checkouts, so it compares any files you point it at with whatever was last pulled or pushed. Switching branches therefore looks like editing the files. Suppose you push from `main`, which adds a `quote` component, and then check out an older branch that lacks `quote.yaml`. `status` lists `deleted components/quote.yaml` under file changes, and `push` deletes `quote` from the CMS without stopping for a conflict. The same happens with two checkouts or clones that push to the same installation.
+
+- Use one export directory per installation. Give each developer their own local installation, and let only one branch or pipeline push to each shared one.
+- After switching branches, run `status` before `push`. If it lists changes you didn't make, push from the branch that matches the installation, or `pull` after merging instead.
+- If a push removed something by mistake, check out the branch that has it and `push` again. That restores the definition. Pages that used it were already protected, because `push` refuses to delete definitions that are still in use.
 
 Each item has a versioned YAML file under `components/` or `templates/`. Filenames use stable IDs, usually UUIDs; unusual IDs use a SHA-256 filename. Keep IDs and filenames unchanged when editing existing items. Output is deterministic, including sorted block field keys, and excludes revisions, publication metadata, snapshots, sessions, and credentials. Formatting-only edits don't count as changes. Unrelated files are preserved by `pull`, but `push` rejects them inside the item directories. The CLI never commits or pushes to Git itself.
 
