@@ -52,4 +52,27 @@ Component styles live beside their components in `stylex.create` declarations an
 
 Add renderer names to the Rust `Renderer` enum, the frontend `RendererName` type, and the `renderers` map in `web/src/components/Renderer.tsx`. Define their fields through the component editor. Built-in renderers use the keys `title`, `body`, `eyebrow`, `button_label`, and `button_url` where applicable. Arbitrary extra fields are stored but need renderer code to display them. Text is escaped; this version does not accept executable templates or raw HTML.
 
+## Change the database schema
+
+Startup applies schema changes from the `MIGRATIONS` list in `src/lib.rs`. Statement N is version N; the `schema_migrations` table records which versions a database has applied, and each instance runs only the newer ones. The server and CLI apply migrations while holding the shared lock row, so overlapping deployments and CLI runs don't apply a statement twice. Versions 1–10 are the baseline schema. Databases created before versioning adopt the baseline on their next start.
+
+To change the schema, append one SQL statement to the end of `MIGRATIONS`:
+
+```rust
+const MIGRATIONS: &[&str] = &[
+    // ... existing entries, unchanged ...
+    "ALTER TABLE sessions ADD COLUMN user_agent VARCHAR(255) NULL",
+    "CREATE INDEX sessions_expires ON sessions(expires_at)",
+];
+```
+
+- Never edit, reorder or remove an entry that has run anywhere. Fix mistakes with a new entry.
+- Use one statement per entry. MySQL commits DDL immediately, so a multi-statement entry could apply partly. If a statement fails, startup stops and later entries don't run. Fix the database or the statement before restarting.
+- Give new columns a default or allow NULL, so existing rows and older instances still running during a deployment keep working. Name the columns in every `INSERT` so added columns don't break it.
+- Don't alter `cms_lock`; migrations run while holding its lock.
+- Prefer DDL that works on both MySQL 8.4 and MariaDB, which the tests also run on.
+- Back up the database before deploying a migration.
+
+Versions are list positions, so a fork and upstream can both claim the next number. A database skips every version it has recorded, whatever statement sits there now. When a merge brings upstream entries at versions your databases already applied, keep your applied entries in place and append upstream's statements after them.
+
 For renderer code hosted in another app, see [headless integration](headless.md). For custom sign-in, see [authentication providers](authentication.md#supply-your-own-authentication). See [operating limits](deployment.md#backups-and-operating-limits) for features this version does not support.

@@ -44,6 +44,6 @@ This version requires MySQL 8.4. It creates tables and seeds a new database on s
 
 ## Backups and operating limits
 
-Back up MySQL with `mysqldump --single-transaction` or Railway's database backups. Test restores before relying on backups. Tables use InnoDB. Database transactions serialize validation and writes through a lock row, including during overlapping deployments. Schema migration tooling beyond initial table creation is not yet included.
+Back up MySQL with `mysqldump --single-transaction` or Railway's database backups. Test restores before relying on backups. Tables use InnoDB. Database transactions serialize validation and writes through a lock row, including during overlapping deployments. Startup applies pending [schema migrations](development.md#change-the-database-schema) under the same lock; back up before upgrading.
 
 Current limits include no media library, rich-text editor, localization, review audit history, revision history/rollback UI, unpublish action, or plugin loading. Public pages render client-side, so server-rendered SEO is not yet covered. Template/component updates do not have optimistic concurrency checks. Performance has not been benchmarked. Admin and CLI operations are serialized; public content and health checks do not take the CMS lock. The server admits at most 16 database jobs at once and returns 503 when full.

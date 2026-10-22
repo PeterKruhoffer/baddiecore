@@ -190,35 +190,63 @@ fn connect(database_url: &str) -> std::result::Result<Pool, String> {
     })
 }
 
-/// Creates tables, the organization record and seed content when missing.
+/// Schema changes, applied in order at startup. Version N is entry N-1.
+/// Append new statements to the end; never edit, reorder or remove applied ones.
+/// Each entry runs once and is recorded in `schema_migrations`. Do not alter
+/// `cms_lock` here; migrations run while holding its row lock.
+const MIGRATIONS: &[&str] = &[
+    // 1-10: baseline. `IF NOT EXISTS` lets databases created before versioning adopt it.
+    "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    // What each Git export path held at this database's last pull or push. See serialization.
+    "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS accounts(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, password_hash VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+];
+
+/// Applies pending migrations, then creates the organization record and seed content when missing.
 fn prepare(db: &Pool) -> std::result::Result<(), String> {
-    let mut conn = db.get_conn().map_err(|e| {
-        db_error(e);
-        "could not connect to MySQL"
-    })?;
-    for statement in [
-        "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
-        "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
-        "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        // What each Git export path held at this database's last pull or push. See serialization.
-        "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS accounts(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, password_hash VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    ] {
-        conn.query_drop(statement).map_err(|e| {
-            db_error(e);
-            "could not initialize MySQL schema"
-        })?;
-    }
+    migrate(db).map_err(|_| "could not migrate MySQL schema")?;
     database_transaction(db, TransactionMode::Commit, |tx| workflow::initialize(tx))
         .map_err(|e| e.1)?;
     seed(db).map_err(|e| e.1)
+}
+
+fn migrate(db: &Pool) -> Result<()> {
+    let mut conn = db.get_conn().map_err(db_error)?;
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
+        "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
+        "CREATE TABLE IF NOT EXISTS schema_migrations(version INT PRIMARY KEY) ENGINE=InnoDB",
+    ] {
+        conn.query_drop(statement).map_err(db_error)?;
+    }
+    // DDL commits implicitly, which would release a lock taken on the same
+    // connection. Hold the shared lock row on `lock` and migrate on `conn`.
+    let mut lock = db.get_conn().map_err(db_error)?;
+    let mut tx = lock
+        .start_transaction(TxOpts::default())
+        .map_err(db_error)?;
+    tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
+        .map_err(db_error)?;
+    let applied: usize = conn
+        .query_first("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
+        .map_err(db_error)?
+        .unwrap();
+    for (index, statement) in MIGRATIONS.iter().enumerate().skip(applied) {
+        conn.query_drop(statement).map_err(db_error)?;
+        conn.exec_drop(
+            "INSERT INTO schema_migrations(version) VALUES(?)",
+            (index + 1,),
+        )
+        .map_err(db_error)?;
+    }
+    tx.commit().map_err(db_error)
 }
 
 /// Makes `id` an administrator and sets its password, for operator recovery.
@@ -307,7 +335,7 @@ fn seed(db: &Pool) -> Result<()> {
                     .collect(),
             };
             tx.exec_drop(
-                "INSERT INTO components VALUES(?,?)",
+                "INSERT INTO components(id,data) VALUES(?,?)",
                 (&component.id, json(&component)?),
             )
             .map_err(db_error)?;
@@ -324,7 +352,7 @@ fn seed(db: &Pool) -> Result<()> {
             }],
         };
         tx.exec_drop(
-            "INSERT INTO templates VALUES(?,?)",
+            "INSERT INTO templates(id,data) VALUES(?,?)",
             (&template.id, json(&template)?),
         )
         .map_err(db_error)?;
@@ -366,7 +394,7 @@ fn seed(db: &Pool) -> Result<()> {
             published_revision: None,
         };
         tx.exec_drop(
-            "INSERT INTO pages VALUES(?,?,?)",
+            "INSERT INTO pages(id,slug,data) VALUES(?,?,?)",
             (&page.id, &page.slug, json(&page)?),
         )
         .map_err(db_error)?;
@@ -826,7 +854,7 @@ async fn create_template(
             };
             validate_template(db, &item)?;
             db.exec_drop(
-                "INSERT INTO templates VALUES(?,?)",
+                "INSERT INTO templates(id,data) VALUES(?,?)",
                 (&item.id, json(&item)?),
             )
             .map_err(db_error)?;
@@ -939,7 +967,7 @@ async fn create_component(
             };
             validate_component(&item)?;
             db.exec_drop(
-                "INSERT INTO components VALUES(?,?)",
+                "INSERT INTO components(id,data) VALUES(?,?)",
                 (&item.id, json(&item)?),
             )
             .map_err(db_error)?;
@@ -1302,7 +1330,7 @@ fn load_one<T: serde::de::DeserializeOwned>(
 }
 fn insert_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
     db.exec_drop(
-        "INSERT INTO pages VALUES(?,?,?)",
+        "INSERT INTO pages(id,slug,data) VALUES(?,?,?)",
         (&page.id, &page.slug, json(page)?),
     )
     .map_err(constraint_error)?;

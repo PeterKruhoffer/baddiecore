@@ -176,8 +176,11 @@ async fn register_component(
                 .map_err(db_error)?;
                 StatusCode::OK
             } else {
-                db.exec_drop("INSERT INTO components VALUES(?,?)", (&id, json(&item)?))
-                    .map_err(db_error)?;
+                db.exec_drop(
+                    "INSERT INTO components(id,data) VALUES(?,?)",
+                    (&id, json(&item)?),
+                )
+                .map_err(db_error)?;
                 StatusCode::CREATED
             };
             Ok((status, Json(item)))

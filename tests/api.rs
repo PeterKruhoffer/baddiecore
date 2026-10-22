@@ -865,6 +865,78 @@ async fn concurrent_instances_cannot_overwrite_a_revision() {
     assert_eq!(saved.title, winner);
 }
 
+fn schema(url: &str) -> Vec<(String, String)> {
+    let mut conn = Pool::new(Opts::from_url(url).unwrap())
+        .unwrap()
+        .get_conn()
+        .unwrap();
+    let tables: Vec<String> = conn
+        .query("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY table_name")
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let (name, ddl): (String, String) = conn
+                .query_first(format!("SHOW CREATE TABLE `{table}`"))
+                .unwrap()
+                .unwrap();
+            (name, ddl)
+        })
+        .collect()
+}
+
+#[test]
+fn databases_from_before_versioning_upgrade_to_the_current_schema() {
+    let fresh = TestDatabase::new();
+    drop(AppState::open(&fresh.url, Some(PASSWORD.into()), false).unwrap());
+
+    // The schema `prepare` created before migrations existed. Keep this fixture unchanged.
+    let old = TestDatabase::new();
+    let pool = Pool::new(Opts::from_url(&old.url).unwrap()).unwrap();
+    let mut conn = pool.get_conn().unwrap();
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS cms_lock(id INT PRIMARY KEY) ENGINE=InnoDB",
+        "INSERT IGNORE INTO cms_lock(id) VALUES(1)",
+        "CREATE TABLE IF NOT EXISTS components(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS templates(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS pages(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS snapshots(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, slug VARBINARY(2048) NOT NULL UNIQUE, data LONGTEXT NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS route_aliases(slug VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS organization(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS sync_base(path VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, hash CHAR(64) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS reviews(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, FOREIGN KEY(id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS accounts(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, password_hash VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "INSERT INTO sync_base(path,hash) VALUES('components/kept.yaml',REPEAT('a',64))",
+    ] {
+        conn.query_drop(statement).unwrap();
+    }
+
+    // Two instances upgrading at once must apply each migration exactly once.
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| drop(AppState::open(&old.url, Some(PASSWORD.into()), false).unwrap()));
+        }
+    });
+    assert_eq!(schema(&old.url), schema(&fresh.url));
+    let versions = "SELECT version FROM schema_migrations ORDER BY version";
+    let fresh_versions: Vec<i64> = Pool::new(Opts::from_url(&fresh.url).unwrap())
+        .unwrap()
+        .get_conn()
+        .unwrap()
+        .query(versions)
+        .unwrap();
+    assert!(!fresh_versions.is_empty());
+    assert_eq!(conn.query::<i64, _>(versions).unwrap(), fresh_versions);
+    assert_eq!(
+        conn.query_first::<String, _>(
+            "SELECT hash FROM sync_base WHERE path='components/kept.yaml'"
+        )
+        .unwrap(),
+        Some("a".repeat(64))
+    );
+}
+
 #[test]
 fn failed_seed_rolls_back_all_inserts() {
     let db = TestDatabase::new();
