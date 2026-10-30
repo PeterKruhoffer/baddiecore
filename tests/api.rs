@@ -1547,13 +1547,15 @@ async fn opening_an_older_database_indexes_existing_draft_aliases() {
     page.aliases = vec!["/offer".into()];
     let url = format!("/api/admin/pages/{}", page.id);
     read::<Page>(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
-    // Databases from before the page_paths migration have neither the table nor its version.
+    // Databases from before the page_paths migration have neither that table, nor
+    // any later table, nor their versions.
     let mut conn = Pool::new(Opts::from_url(&app.db.url).unwrap())
         .unwrap()
         .get_conn()
         .unwrap();
-    conn.query_drop("DROP TABLE page_paths").unwrap();
-    conn.query_drop("DELETE FROM schema_migrations WHERE version=11")
+    conn.query_drop("DROP TABLE page_paths, scheduled_publications")
+        .unwrap();
+    conn.query_drop("DELETE FROM schema_migrations WHERE version>=11")
         .unwrap();
     let reopened = router(
         AppState::open(&app.db.url, None, false).unwrap(),
@@ -4018,4 +4020,246 @@ async fn richtext_validates_settings_required_content_and_preserves_published_ic
             .fields["body"],
         document
     );
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+async fn wait_until(publish_at: i64) {
+    while unix_now() < publish_at {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test]
+async fn scheduled_publication_releases_the_scheduled_version_and_keeps_later_drafts() {
+    let app = setup().await;
+    let state = AppState::open(&app.db.url, None, false).unwrap();
+    let mut home = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    let url = "/api/admin/pages/home/schedule";
+    let schedule = |revision: i64, publish_at: i64| {
+        let body = json!({"revision": revision, "publish_at": publish_at});
+        let app = &app;
+        async move {
+            call(&app.app, "PUT", url, Some(&app.cookie), Some(&body))
+                .await
+                .status()
+        }
+    };
+    assert_eq!(schedule(1, unix_now() - 1).await, StatusCode::BAD_REQUEST);
+    assert_eq!(schedule(2, unix_now() + 60).await, StatusCode::CONFLICT);
+    // Publishing immediately replaces a pending schedule.
+    assert_eq!(schedule(1, unix_now() + 60).await, StatusCode::OK);
+    let published = call(
+        &app.app,
+        "POST",
+        "/api/admin/pages/home/publish",
+        Some(&app.cookie),
+        Some(&json!({"revision": 1})),
+    )
+    .await;
+    assert_eq!(published.status(), StatusCode::OK);
+    assert!(bootstrap(&app).await.schedules.is_empty());
+
+    home.title = "Scheduled title".into();
+    home = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&home),
+        )
+        .await,
+    )
+    .await;
+    let publish_at = unix_now() + 2;
+    assert_eq!(schedule(home.revision, publish_at).await, StatusCode::OK);
+    // Edits after scheduling stay in the draft and do not go live.
+    home.title = "Later draft".into();
+    let _: Page = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&home),
+        )
+        .await,
+    )
+    .await;
+    let pending = bootstrap(&app).await.schedules;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        (pending[0].revision, pending[0].publish_at),
+        (2, publish_at)
+    );
+    assert_eq!(state.publish_due().await, Ok(0));
+    let live = || async {
+        read::<Content>(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await)
+            .await
+            .page
+    };
+    assert_eq!(live().await.title, "Home");
+
+    wait_until(publish_at).await;
+    assert_eq!(state.publish_due().await, Ok(1));
+    let live = live().await;
+    assert_eq!((live.title.as_str(), live.revision), ("Scheduled title", 2));
+    let data = bootstrap(&app).await;
+    assert!(data.schedules.is_empty());
+    let draft = data.pages.iter().find(|p| p.id == "home").unwrap();
+    assert_eq!(
+        (
+            draft.title.as_str(),
+            draft.revision,
+            draft.published_revision
+        ),
+        ("Later draft", 3, Some(2))
+    );
+}
+
+#[tokio::test]
+async fn scheduled_publication_records_failures_and_review_approval_schedules() {
+    let app = setup().await;
+    members(&app).await;
+    let state = AppState::open(&app.db.url, None, false).unwrap();
+    let scoped = member_app(&app);
+    let mut page = create_test_page(&app, "/news/a").await;
+    let publish_at = unix_now() + 2;
+    let submitted: Value = read(
+        call(
+            &scoped,
+            "POST",
+            &format!("/api/admin/pages/{}/submit", page.id),
+            Some("editor"),
+            Some(&json!({"revision": page.revision, "publish_at": publish_at})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(submitted["publish_at"], publish_at);
+    let approved = call(
+        &scoped,
+        "POST",
+        &format!("/api/admin/reviews/{}", page.id),
+        Some("reviewer"),
+        Some(&json!({"revision": page.revision, "submission_id": submitted["submission_id"], "approve": true, "feedback": ""})),
+    )
+    .await;
+    assert_eq!(approved.status(), StatusCode::OK);
+    let pending = bootstrap(&app).await.schedules;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].scheduled_by, "reviewer");
+    // Editors cannot cancel; reviewers can.
+    let cancel = format!("/api/admin/pages/{}/schedule", page.id);
+    assert_eq!(
+        call(&scoped, "DELETE", &cancel, Some("editor"), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    // Move the draft away and let another page publish at the scheduled path.
+    page.slug = "/news/b".into();
+    call(
+        &app.app,
+        "PUT",
+        &format!("/api/admin/pages/{}", page.id),
+        Some(&app.cookie),
+        Some(&page),
+    )
+    .await;
+    let other = create_test_page(&app, "/news/a").await;
+    let response = call(
+        &app.app,
+        "POST",
+        &format!("/api/admin/pages/{}/publish", other.id),
+        Some(&app.cookie),
+        Some(&json!({"revision": other.revision})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_until(publish_at).await;
+    assert_eq!(state.publish_due().await, Ok(0));
+    let failed = bootstrap(&app).await.schedules;
+    assert_eq!(
+        failed[0].error.as_deref(),
+        Some("a published path already exists")
+    );
+    let live: Content = read(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/a",
+            None,
+            None::<&Value>,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(live.page.id, other.id);
+    // Failed schedules are not retried; reviewers dismiss them.
+    assert_eq!(state.publish_due().await, Ok(0));
+    assert_eq!(
+        call(&scoped, "DELETE", &cancel, Some("reviewer"), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(bootstrap(&app).await.schedules.is_empty());
+}
+
+#[tokio::test]
+async fn scheduled_publication_cannot_take_an_alias_another_draft_has_claimed() {
+    let app = setup().await;
+    let state = AppState::open(&app.db.url, None, false).unwrap();
+    let mut page = create_test_page(&app, "/a").await;
+    let url = format!("/api/admin/pages/{}", page.id);
+    page.aliases = vec!["/offer".into()];
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    let publish_at = unix_now() + 2;
+    let response = call(
+        &app.app,
+        "PUT",
+        &format!("{url}/schedule"),
+        Some(&app.cookie),
+        Some(&json!({"revision": page.revision, "publish_at": publish_at})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The draft releases the alias and another unpublished page claims it.
+    page.aliases.clear();
+    read::<Page>(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    let other = create_test_page(&app, "/offer").await;
+    wait_until(publish_at).await;
+    assert_eq!(state.publish_due().await, Ok(0));
+    assert_eq!(
+        bootstrap(&app).await.schedules[0].error.as_deref(),
+        Some("another page's draft now uses this path")
+    );
+    assert_ne!(
+        call(&app.app, "GET", "/offer", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    let response = call(
+        &app.app,
+        "POST",
+        &format!("/api/admin/pages/{}/publish", other.id),
+        Some(&app.cookie),
+        Some(&json!({"revision": other.revision})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
 }

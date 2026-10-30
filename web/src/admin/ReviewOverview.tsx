@@ -2,6 +2,7 @@ import { createSignal, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import type { Review, Role } from "../types";
 import { api } from "../lib/api";
+import { formatTime } from "../lib/time";
 import { common } from "../common.stylex";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
 
@@ -74,6 +75,7 @@ export function ReviewOverview(p: {
     { value: "all", label: "All" },
   ] as const;
   const visible = () => p.reviews.filter((r) => filter() === "all" || r.status === filter());
+  const scheduled = (review: Review) => (review.publish_at ?? 0) > Date.now() / 1000;
   const current = () => visible().find((r) => r.id === selected()) ?? visible()[0];
   async function decide(review: Review, approve: boolean, feedback: string) {
     setBusy(true);
@@ -93,7 +95,8 @@ export function ReviewOverview(p: {
         <div>
           <h1 {...stylex.attrs(styles.heading)}>Reviews</h1>
           <p {...stylex.attrs(common.muted)}>
-            Review the submitted snapshot. Approval publishes that exact revision immediately.
+            Review the submitted snapshot. Approval publishes that exact revision, immediately or at
+            the time the submitter requested.
           </p>
         </div>
         <button
@@ -155,6 +158,7 @@ export function ReviewOverview(p: {
                 <code>{review.content.page.slug}</code>
                 <small {...stylex.attrs(styles.meta)}>
                   Revision {review.content.page.revision} · Submitted by {review.submitted_by}
+                  {review.publish_at ? ` · Publish ${formatTime(review.publish_at)}` : ""}
                 </small>
               </button>
             )}
@@ -170,10 +174,15 @@ export function ReviewOverview(p: {
                   {review.status === "submitted"
                     ? "In review"
                     : review.status === "approved"
-                      ? "Approved and published"
+                      ? review.publish_at
+                        ? "Approved"
+                        : "Approved and published"
                       : "Changes requested"}
                 </span>
               </p>
+              <Show when={review.publish_at}>
+                {(at) => <p>Requested publish time: {formatTime(at())}</p>}
+              </Show>
               <p {...stylex.attrs(styles.meta)}>
                 Submitted by {review.submitted_by}
                 {review.reviewed_by ? ` · Reviewed by ${review.reviewed_by}` : ""}
@@ -223,7 +232,9 @@ export function ReviewOverview(p: {
                   </Show>
                   <Show when={p.role !== "editor" && review.status === "submitted"}>
                     <p {...stylex.attrs(common.notice)}>
-                      Approving publishes this submitted revision immediately.
+                      {scheduled(review)
+                        ? `Approving schedules this submitted revision to publish ${formatTime(review.publish_at!)}.`
+                        : "Approving publishes this submitted revision immediately."}
                     </p>
                     <form
                       onSubmit={(e) => {
@@ -259,7 +270,7 @@ export function ReviewOverview(p: {
                           value="approve"
                           disabled={busy()}
                         >
-                          Approve and publish
+                          {scheduled(review) ? "Approve and schedule" : "Approve and publish"}
                         </button>
                       </div>
                     </form>

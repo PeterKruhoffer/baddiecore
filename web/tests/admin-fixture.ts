@@ -105,6 +105,7 @@ export function bootstrap(role: Role = "admin"): Bootstrap {
     templates,
     components,
     access: { id: "test-user", role, paths: ["/"] },
+    schedules: [],
     reviews: pages.map((page) => ({
       id: page.id,
       submission_id: `submission-${page.id}`,

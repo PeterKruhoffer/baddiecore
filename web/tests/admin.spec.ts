@@ -1,6 +1,6 @@
 import { expect, test, type Page as BrowserPage } from "@playwright/test";
 import { bootstrap } from "./admin-fixture";
-import type { Bootstrap, ComponentDef, Page, Template } from "../src/types";
+import type { Bootstrap, ComponentDef, Page, Schedule, Template } from "../src/types";
 
 const organization = {
   revision: 1,
@@ -45,6 +45,16 @@ async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
         });
       data.pages[0].published_revision = body.revision;
       return route.fulfill({ json: data.pages[0] });
+    }
+    if (url === "/api/admin/pages/home/schedule" && req.method() === "PUT") {
+      data.schedules = [
+        { page_id: "home", ...body, scheduled_by: "test-user", error: null } as Schedule,
+      ];
+      return route.fulfill({ json: data.schedules[0] });
+    }
+    if (url === "/api/admin/pages/home/schedule" && req.method() === "DELETE") {
+      data.schedules = [];
+      return route.fulfill({ status: 204 });
     }
     if (url === "/api/admin/pages/home/submit") {
       data.reviews[0] = {
@@ -469,6 +479,7 @@ test("editors cannot publish, decide reviews or edit schemas; submission saves t
   await expect(page.getByRole("button", { name: "Publish", exact: true })).toHaveCount(0);
   await page.getByRole("textbox", { name: "Title *", exact: true }).fill("Ready for review");
   await page.getByRole("button", { name: "Submit for review", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Save and submit" }).click();
   await expect(page.getByText("Saved draft · Revision 13", { exact: true })).toBeVisible();
   expect(state.writes[1]).toEqual({ url: "/api/admin/pages/home/submit", body: { revision: 13 } });
   await page.getByRole("button", { name: /Reviews .*pending/ }).click();
@@ -881,4 +892,66 @@ test("published rich text renders semantic content and escapes literal HTML", as
   await expect(page.locator("main script")).toHaveCount(0);
   await expect(page.getByRole("img", { name: "Site star" })).toBeVisible();
   await capture(page, "richtext-public");
+});
+
+test("admins schedule a saved revision for later and can cancel it", async ({ page }) => {
+  const state = await openWorkspace(page);
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: "At a specific date and time" }).check();
+  const when = dialog.getByLabel("Publish at");
+  await when.fill("2020-01-01T09:00");
+  await dialog.getByRole("button", { name: "Schedule publication" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Choose a future date and time.");
+  await when.fill("2099-03-10T09:30");
+  await capture(page, "schedule-dialog");
+  await dialog.getByRole("button", { name: "Schedule publication" }).click();
+  await expect(dialog).not.toBeVisible();
+  const expected = Math.floor(new Date("2099-03-10T09:30").getTime() / 1000);
+  expect(state.writes.at(-1)).toEqual({
+    url: "/api/admin/pages/home/schedule",
+    body: { revision: 12, publish_at: expected },
+  });
+  await expect(page.getByText("Scheduled to publish", { exact: true })).toBeVisible();
+  await capture(page, "schedule-notice");
+  await page.getByRole("button", { name: /^All pages/ }).click();
+  await expect(page.getByRole("list", { name: "Page tree" })).toContainText(
+    `Scheduled ${new Date(expected * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`,
+  );
+  await capture(page, "schedule-tree");
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel schedule", exact: true }).click();
+  await expect(page.getByText("Scheduled to publish", { exact: true })).toHaveCount(0);
+});
+
+test("editors request a publish time when submitting for review", async ({ page }) => {
+  const state = await openWorkspace(page, bootstrap("editor"));
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Submit for review", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: "At a specific date and time" }).check();
+  await dialog.getByLabel("Publish at").fill("2099-03-10T09:30");
+  await dialog.getByRole("button", { name: "Submit page" }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(state.writes.at(-1)).toEqual({
+    url: "/api/admin/pages/home/submit",
+    body: { revision: 12, publish_at: Math.floor(new Date("2099-03-10T09:30").getTime() / 1000) },
+  });
+  await expect(page.getByRole("button", { name: "Cancel schedule" })).toHaveCount(0);
+});
+
+test.describe("in a daylight-saving time zone", () => {
+  test.use({ timezoneId: "Europe/Copenhagen" });
+  test("scheduling rejects a time skipped by the clock change", async ({ page }) => {
+    const state = await openWorkspace(page);
+    await page.getByRole("button", { name: "Home", exact: true }).click();
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("radio", { name: "At a specific date and time" }).check();
+    await dialog.getByLabel("Publish at").fill("2099-03-29T02:30");
+    await dialog.getByRole("button", { name: "Schedule publication" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("does not exist in your time zone");
+    expect(state.writes).toEqual([]);
+  });
 });

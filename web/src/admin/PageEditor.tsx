@@ -1,6 +1,7 @@
 import { createSignal, For, lazy, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
-import type { Block, ComponentDef, Page, Region, Review, Template } from "../types";
+import type { Block, ComponentDef, Page, Region, Review, Schedule, Template } from "../types";
+import { formatTime, localInputSeconds, localInputValue, timeZone } from "../lib/time";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
 import { common } from "../common.stylex";
 import { joinPath, pageParentPaths, parentPath, pathSegment } from "./pageTree";
@@ -132,6 +133,10 @@ const styles = stylex.create({
   previewSelected: { outlineColor: "#2563eb" },
   pathHelp: { fontSize: 12, lineHeight: 1.45, color: "#64748b" },
   pathPreview: { overflowWrap: "anywhere", color: "#2563eb" },
+  when: { borderWidth: 0, padding: 0, margin: "0 0 16px", display: "grid", gap: 8 },
+  choice: { display: "flex", gap: 8, alignItems: "center", fontSize: 13 },
+  hint: { fontWeight: 400 },
+  scheduleNotice: { marginBottom: 16 },
 });
 type Props = {
   page: Page;
@@ -142,9 +147,13 @@ type Props = {
   isAdmin: boolean;
   paths: string[];
   review?: Review;
+  schedule?: Schedule;
+  canCancelSchedule: boolean;
   onSave: (p: Page) => Promise<Page>;
   onPublish: (p: Page) => Promise<Page>;
-  onSubmit: (p: Page) => Promise<Page>;
+  onSchedule: (p: Page, publishAt: number) => Promise<Page>;
+  onCancelSchedule: (p: Page) => Promise<void>;
+  onSubmit: (p: Page, publishAt?: number) => Promise<Page>;
   onDelete: (p: Page) => Promise<void>;
   onDirty: (dirty: boolean) => void;
 };
@@ -161,7 +170,17 @@ export function PageEditor(p: Props) {
   const [busy, setBusy] = createSignal("");
   const [error, setError] = createSignal("");
   const [dirty, setDirty] = createSignal(false);
+  const [mode, setMode] = createSignal<"publish" | "submit">("publish");
+  const [later, setLater] = createSignal(false);
+  const [publishAt, setPublishAt] = createSignal("");
   let publishDialog!: HTMLDialogElement;
+  function openDialog(value: "publish" | "submit") {
+    setMode(value);
+    setLater(false);
+    setPublishAt(localInputValue(new Date(Date.now() + 24 * 60 * 60 * 1000)));
+    setError("");
+    publishDialog.showModal();
+  }
   let dragged: string | undefined;
   const template = () => p.templates.find((t) => t.id === draft().template_id);
   const isRoot = () => p.page.slug === "/";
@@ -224,7 +243,15 @@ export function PageEditor(p: Props) {
       setBusy("");
     }
   }
-  async function publish(submit = false) {
+  async function publish() {
+    const submit = mode() === "submit";
+    const at = later() ? localInputSeconds(publishAt()) : undefined;
+    if (later() && at === undefined)
+      return setError(
+        "That time does not exist in your time zone, for example during a daylight-saving change. Choose another time.",
+      );
+    if (at !== undefined && !(at > Date.now() / 1000))
+      return setError("Choose a future date and time.");
     setBusy(submit ? "submit" : "publish");
     setError("");
     try {
@@ -232,8 +259,16 @@ export function PageEditor(p: Props) {
       setDraft(structuredClone(saved));
       setDirty(false);
       p.onDirty(false);
-      setDraft(structuredClone(await (submit ? p.onSubmit(saved) : p.onPublish(saved))));
-      if (!submit) publishDialog.close();
+      setDraft(
+        structuredClone(
+          await (submit
+            ? p.onSubmit(saved, at)
+            : at !== undefined
+              ? p.onSchedule(saved, at)
+              : p.onPublish(saved)),
+        ),
+      );
+      publishDialog.close();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -292,7 +327,7 @@ export function PageEditor(p: Props) {
           <button
             {...stylex.attrs(common.button, !p.isAdmin && common.primary)}
             disabled={!!busy() || !validPath()}
-            onClick={() => void publish(true)}
+            onClick={() => openDialog("submit")}
           >
             {busy() === "submit" ? "Submitting…" : "Submit for review"}
           </button>
@@ -300,10 +335,7 @@ export function PageEditor(p: Props) {
             <button
               {...stylex.attrs(common.button, common.primary)}
               disabled={!!busy() || !validPath()}
-              onClick={() => {
-                setError("");
-                publishDialog.showModal();
-              }}
+              onClick={() => openDialog("publish")}
             >
               {busy() === "publish" ? "Publishing…" : "Publish"}
             </button>
@@ -341,6 +373,50 @@ export function PageEditor(p: Props) {
       )}
       <div {...stylex.attrs(styles.grid, !experience() && styles.contentOnly)} inert={!!busy()}>
         <aside {...stylex.attrs(styles.side)}>
+          <Show when={p.schedule}>
+            {(schedule) => (
+              <div
+                {...stylex.attrs(
+                  common.notice,
+                  !!schedule().error && common.warning,
+                  styles.scheduleNotice,
+                )}
+                role="status"
+              >
+                <strong>
+                  {schedule().error ? "Scheduled publication failed" : "Scheduled to publish"}
+                </strong>
+                <p>
+                  Revision {schedule().revision} goes live {formatTime(schedule().publish_at)}.
+                </p>
+                <Show when={schedule().error}>
+                  <p>{schedule().error} Schedule again or publish when it is resolved.</p>
+                </Show>
+                <Show when={!schedule().error && schedule().revision !== draft().revision}>
+                  <p>Later draft changes are not included. Schedule again to include them.</p>
+                </Show>
+                <Show when={p.canCancelSchedule}>
+                  <button
+                    {...stylex.attrs(common.button)}
+                    disabled={!!busy()}
+                    onClick={async () => {
+                      setBusy("cancel");
+                      setError("");
+                      try {
+                        await p.onCancelSchedule(draft());
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : "Could not cancel schedule");
+                      } finally {
+                        setBusy("");
+                      }
+                    }}
+                  >
+                    {schedule().error ? "Dismiss" : "Cancel schedule"}
+                  </button>
+                </Show>
+              </div>
+            )}
+          </Show>
           <details {...stylex.attrs(styles.settings)}>
             <summary {...stylex.attrs(styles.summary)}>Page details · {template()?.name}</summary>
             <label {...stylex.attrs(common.label)}>
@@ -585,10 +661,15 @@ export function PageEditor(p: Props) {
                   {review().status === "submitted"
                     ? "In review"
                     : review().status === "approved"
-                      ? "Approved and published"
+                      ? review().publish_at
+                        ? "Approved"
+                        : "Approved and published"
                       : "Changes requested"}
                 </strong>
                 <p>Submitted revision {review().content.page.revision}</p>
+                <Show when={review().publish_at}>
+                  {(at) => <p>Requested publish time: {formatTime(at())}</p>}
+                </Show>
                 <Show when={review().feedback}>
                   <p>{review().feedback}</p>
                 </Show>
@@ -676,9 +757,55 @@ export function PageEditor(p: Props) {
         }}
       >
         <h2 id="publish-heading" {...stylex.attrs(common.heading)}>
-          Publish {draft().title}?
+          {mode() === "submit"
+            ? `Submit ${draft().title} for review?`
+            : `Publish ${draft().title}?`}
         </h2>
-        <p {...stylex.attrs(common.muted)}>Publish this page immediately to your live site.</p>
+        <fieldset {...stylex.attrs(styles.when)}>
+          <legend {...stylex.attrs(common.label)}>When should it go live?</legend>
+          <label {...stylex.attrs(styles.choice)}>
+            <input
+              type="radio"
+              name="when"
+              checked={!later()}
+              disabled={!!busy()}
+              onChange={() => setLater(false)}
+            />
+            {mode() === "submit" ? "As soon as it is approved" : "Now"}
+          </label>
+          <label {...stylex.attrs(styles.choice)}>
+            <input
+              type="radio"
+              name="when"
+              checked={later()}
+              disabled={!!busy()}
+              onChange={() => setLater(true)}
+            />
+            At a specific date and time
+          </label>
+          <Show when={later()}>
+            <label {...stylex.attrs(common.label)}>
+              Publish at
+              <input
+                type="datetime-local"
+                {...stylex.attrs(common.control)}
+                disabled={!!busy()}
+                min={localInputValue(new Date())}
+                value={publishAt()}
+                onInput={(e) => {
+                  setPublishAt(e.currentTarget.value);
+                  setError("");
+                }}
+              />
+              <small {...stylex.attrs(common.muted, styles.hint)}>
+                Your time zone: {timeZone}.{" "}
+                {mode() === "submit"
+                  ? "Approval schedules this revision for that time."
+                  : "This saved revision goes live then; later edits stay in the draft."}
+              </small>
+            </label>
+          </Show>
+        </fieldset>
         <dl {...stylex.attrs(styles.metadata)}>
           <dt>URL</dt>
           <dd {...stylex.attrs(styles.metadataValue)}>{draft().slug}</dd>
@@ -693,13 +820,14 @@ export function PageEditor(p: Props) {
         </dl>
         <Show when={dirty()}>
           <p {...stylex.attrs(common.muted)}>
-            Unsaved changes will be saved as a new revision before publishing.
+            Unsaved changes will be saved as a new revision first.
           </p>
         </Show>
         <div {...stylex.attrs(common.notice)}>
           <strong>This page only</strong>
           <p>
-            {draft().title} at {draft().slug} will go live. Child pages will not be published.
+            {draft().title} at {draft().slug} will go live
+            {mode() === "submit" ? " once approved" : ""}. Child pages will not be published.
           </p>
           <p>The page, template and component definitions are published together.</p>
         </div>
@@ -721,7 +849,19 @@ export function PageEditor(p: Props) {
             disabled={!!busy()}
             onClick={() => void publish()}
           >
-            {busy() === "publish" ? "Publishing…" : dirty() ? "Save and publish" : "Publish page"}
+            {busy()
+              ? "Working…"
+              : mode() === "submit"
+                ? dirty()
+                  ? "Save and submit"
+                  : "Submit page"
+                : later()
+                  ? dirty()
+                    ? "Save and schedule"
+                    : "Schedule publication"
+                  : dirty()
+                    ? "Save and publish"
+                    : "Publish page"}
           </button>
         </div>
       </dialog>

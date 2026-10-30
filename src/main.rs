@@ -61,6 +61,7 @@ async fn main() {
             eprintln!("bind failed: {e}");
             std::process::exit(2)
         });
+    tokio::spawn(state.clone().publish_scheduled_pages());
     println!("listening on {address}");
     axum::serve(listener, router(state, static_dir))
         .with_graceful_shutdown(shutdown_signal())

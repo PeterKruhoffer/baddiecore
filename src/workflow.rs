@@ -278,6 +278,17 @@ pub struct Review {
     pub status: ReviewStatus,
     pub feedback: String,
     pub reviewed_by: Option<String>,
+    /// Requested publication time in Unix seconds. Approval schedules the
+    /// submission for this time, or publishes at once when it has passed.
+    #[serde(default)]
+    pub publish_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Submission {
+    revision: i64,
+    #[serde(default)]
+    publish_at: Option<i64>,
 }
 
 pub(super) fn current_content(db: &mut impl Queryable, page: Page) -> Result<Content> {
@@ -300,7 +311,7 @@ pub(super) async fn submit(
     State(state): State<AppState>,
     Extension(editor): Extension<auth::Editor>,
     AxumPath(id): AxumPath<String>,
-    Json(input): Json<Revision>,
+    Json(input): Json<Submission>,
 ) -> Result<Json<Review>> {
     state
         .run_as(editor, move |db, access| {
@@ -308,6 +319,9 @@ pub(super) async fn submit(
             access.page(&page.slug)?;
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
+            }
+            if let Some(publish_at) = input.publish_at {
+                schedule::validate_time(publish_at)?;
             }
             let review = Review {
                 id: id.clone(),
@@ -317,6 +331,7 @@ pub(super) async fn submit(
                 status: ReviewStatus::Submitted,
                 feedback: String::new(),
                 reviewed_by: None,
+                publish_at: input.publish_at,
             };
             db.exec_drop(
                 "INSERT INTO reviews(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)",
@@ -362,7 +377,14 @@ pub(super) async fn decide(
                 ));
             }
             if input.approve {
-                publish(db, current)?;
+                match review.publish_at.filter(|&at| at > schedule::now()) {
+                    Some(at) => {
+                        schedule::store(db, &current, at, &access.id)?;
+                    }
+                    None => {
+                        publish(db, current)?;
+                    }
+                }
                 review.status = ReviewStatus::Approved;
             } else {
                 if input.feedback.trim().is_empty() {

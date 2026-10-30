@@ -6,6 +6,7 @@ import type {
   PackageResult,
   Page,
   Review,
+  Schedule,
   Template,
 } from "../types";
 export class ApiError extends Error {
@@ -58,10 +59,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(value),
     }),
-  submit: (page: Page) =>
+  submit: (page: Page, publish_at?: number) =>
     request<Review>(`/api/admin/pages/${encodeURIComponent(page.id)}/submit`, {
       method: "POST",
-      body: JSON.stringify({ revision: page.revision }),
+      body: JSON.stringify({ revision: page.revision, publish_at }),
     }),
   review: (review: Review, approve: boolean, feedback: string) =>
     request<Review>(`/api/admin/reviews/${encodeURIComponent(review.id)}`, {
@@ -89,6 +90,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision: page.revision }),
     }),
+  schedule: (page: Page, publish_at: number) =>
+    request<Schedule>(`/api/admin/pages/${encodeURIComponent(page.id)}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify({ revision: page.revision, publish_at }),
+    }),
+  cancelSchedule: (id: string) =>
+    request<void>(`/api/admin/pages/${encodeURIComponent(id)}/schedule`, { method: "DELETE" }),
   deletePage: (id: string) => request<void>(`/api/admin/pages/${id}`, { method: "DELETE" }),
   createTemplate: (value: Omit<Template, "id">) =>
     request<Template>("/api/admin/templates", {

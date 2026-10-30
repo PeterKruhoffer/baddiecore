@@ -66,6 +66,15 @@ export interface Bootstrap {
   components: ComponentDef[];
   access: Access;
   reviews: Review[];
+  schedules: Schedule[];
+}
+export interface Schedule {
+  page_id: string;
+  revision: number;
+  /** Unix seconds. */
+  publish_at: number;
+  scheduled_by: string;
+  error: string | null;
 }
 export interface Content {
   page: Page;
@@ -100,6 +109,8 @@ export interface Review {
   status: "submitted" | "changes_requested" | "approved";
   feedback: string;
   reviewed_by: string | null;
+  /** Requested publication time in Unix seconds. */
+  publish_at?: number | null;
 }
 export interface PackageResult {
   created: string[];

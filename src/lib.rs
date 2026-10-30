@@ -25,6 +25,7 @@ pub mod auth;
 pub mod headless;
 mod package;
 pub mod richtext;
+pub mod schedule;
 pub mod serialization;
 pub mod workflow;
 
@@ -101,6 +102,7 @@ pub struct Bootstrap {
     pub components: Vec<Component>,
     pub access: workflow::Access,
     pub reviews: Vec<workflow::Review>,
+    pub schedules: Vec<schedule::Schedule>,
 }
 
 struct StoredData {
@@ -224,6 +226,8 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions(token_hash CHAR(64) PRIMARY KEY, account_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     // 11: every draft slug and alias, so a write checks its own paths without loading every page. See claim_paths.
     "CREATE TABLE IF NOT EXISTS page_paths(path VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, INDEX(page_id), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    // 12: at most one snapshot per page waiting to go live at publish_at (Unix seconds). See schedule.
+    "CREATE TABLE IF NOT EXISTS scheduled_publications(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, publish_at BIGINT NOT NULL, revision BIGINT NOT NULL, scheduled_by VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, error TEXT NULL, data LONGTEXT NOT NULL, INDEX(publish_at), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 ];
 
 /// Applies pending migrations, then creates the organization record and seed content when missing.
@@ -514,6 +518,10 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .route("/pages", post(create_page))
         .route("/pages/{id}", put(update_page).delete(delete_page))
         .route("/pages/{id}/publish", post(publish_page))
+        .route(
+            "/pages/{id}/schedule",
+            put(schedule::schedule_page).delete(schedule::cancel),
+        )
         .route("/pages/{id}/submit", post(workflow::submit))
         .route("/reviews/{id}", post(workflow::decide))
         .route(
@@ -619,12 +627,17 @@ async fn bootstrap(
                     access.allows(&review.content.page.slug) && visible.contains(review.id.as_str())
                 })
                 .collect();
+            let schedules = schedule::load(db)?
+                .into_iter()
+                .filter(|schedule| visible.contains(schedule.page_id.as_str()))
+                .collect();
             Ok(Json(Bootstrap {
                 pages: data.pages,
                 templates: data.templates,
                 components: data.components,
                 access,
                 reviews,
+                schedules,
             }))
         })
         .await
@@ -791,10 +804,8 @@ async fn publish_page(
         })
         .await
 }
-// Callers build and validate the snapshot within this same locked transaction.
-fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
-    snapshot.page.published_revision = Some(snapshot.page.revision);
-    let page = &snapshot.page;
+/// Rejects a publication whose path or aliases another page's publication uses.
+fn check_published_paths(db: &mut impl Queryable, page: &Page) -> Result<()> {
     let occupied: Vec<String> = db
         .exec(
             "SELECT slug FROM snapshots WHERE page_id<>? UNION ALL SELECT slug FROM route_aliases WHERE page_id<>?",
@@ -807,9 +818,41 @@ fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
     {
         return Err(ApiError::conflict("a published path already exists"));
     }
+    // A scheduled snapshot may hold paths its draft has since released. Another
+    // page's draft may have claimed them; another draft's canonical path may
+    // still match this page's published path, as after a move.
+    for path in std::iter::once(&page.slug).chain(&page.aliases) {
+        let owner_slug_matches: Option<bool> = db
+            .exec_first(
+                "SELECT p.slug=pp.path FROM page_paths pp JOIN pages p ON p.id=pp.page_id WHERE pp.path=? AND pp.page_id<>?",
+                (path, &page.id),
+            )
+            .map_err(db_error)?;
+        if owner_slug_matches.is_some_and(|canonical| path != &page.slug || !canonical) {
+            return Err(ApiError::conflict(
+                "another page's draft now uses this path",
+            ));
+        }
+    }
+    Ok(())
+}
+// Callers build and validate the snapshot within this same locked transaction.
+// Returns the current draft, which a scheduled snapshot may predate.
+fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
+    snapshot.page.published_revision = Some(snapshot.page.revision);
+    let page = &snapshot.page;
+    check_published_paths(db, page)?;
+    let mut draft = require_page(db, &page.id)?;
+    draft.published_revision = page.published_revision;
     db.exec_drop(
         "UPDATE pages SET data=? WHERE id=?",
-        (json(page)?, &page.id),
+        (json(&draft)?, &page.id),
+    )
+    .map_err(db_error)?;
+    // A newer publication supersedes any pending schedule for this page.
+    db.exec_drop(
+        "DELETE FROM scheduled_publications WHERE page_id=?",
+        (&page.id,),
     )
     .map_err(db_error)?;
     // Never use an upsert here: a conflicting slug belongs to another page.
@@ -829,7 +872,7 @@ fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
         )
         .map_err(constraint_error)?;
     }
-    Ok(snapshot.page)
+    Ok(draft)
 }
 async fn delete_page(
     State(state): State<AppState>,

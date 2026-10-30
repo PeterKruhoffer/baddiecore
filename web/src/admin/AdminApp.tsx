@@ -2,7 +2,8 @@ import { createSignal, For, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { createRequest } from "../lib/resource";
 import { api, ApiError } from "../lib/api";
-import type { ComponentDef, Page, Template } from "../types";
+import type { ComponentDef, Page, Schedule, Template } from "../types";
+import { formatTime } from "../lib/time";
 import { Login } from "./Login";
 import { PageEditor } from "./PageEditor";
 import { DefinitionEditor } from "./DefinitionEditor";
@@ -163,6 +164,8 @@ const styles = stylex.create({
     borderRadius: 20,
   },
   live: { backgroundColor: "#dcfce7", color: "#166534" },
+  scheduled: { backgroundColor: "#eff6ff", color: "#1d4ed8" },
+  statusCell: { display: "flex", flexWrap: "wrap", gap: 6 },
   backdrop: {
     position: "fixed",
     inset: 0,
@@ -434,6 +437,7 @@ export function AdminApp() {
                         fallback={
                           <PageHome
                             pages={d().pages}
+                            schedules={d().schedules}
                             templates={d().templates}
                             paths={d().access.role === "editor" ? d().access.paths : ["/"]}
                             isAdmin={d().access.role === "admin"}
@@ -459,8 +463,19 @@ export function AdminApp() {
                                 isAdmin={d().access.role === "admin"}
                                 paths={d().access.role === "editor" ? d().access.paths : ["/"]}
                                 review={d().reviews.find((r) => r.id === pageId())}
-                                onSubmit={async (value) => {
-                                  await api.submit(value);
+                                schedule={d().schedules.find((s) => s.page_id === pageId())}
+                                canCancelSchedule={d().access.role !== "editor"}
+                                onSchedule={async (value, publishAt) => {
+                                  await api.schedule(value, publishAt);
+                                  await refresh();
+                                  return value;
+                                }}
+                                onCancelSchedule={async (value) => {
+                                  await api.cancelSchedule(value.id);
+                                  await refresh();
+                                }}
+                                onSubmit={async (value, publishAt) => {
+                                  await api.submit(value, publishAt);
                                   await refresh();
                                   return value;
                                 }}
@@ -499,6 +514,7 @@ export function AdminApp() {
 }
 function PageHome(p: {
   pages: Page[];
+  schedules: Schedule[];
   templates: Template[];
   paths: string[];
   isAdmin: boolean;
@@ -571,6 +587,7 @@ function PageHome(p: {
             node={tree()}
             level={0}
             isAdmin={p.isAdmin}
+            schedules={p.schedules}
             expanded={expanded()}
             onToggle={(path) => {
               const next = new Set(expanded());
@@ -668,6 +685,7 @@ function PageTreeRows(p: {
   node: PageTreeNode;
   level: number;
   isAdmin: boolean;
+  schedules: Schedule[];
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onChoose: (id: string) => void;
@@ -704,17 +722,28 @@ function PageTreeRows(p: {
         </div>
         <Show when={p.node.page} fallback={<span>Folder</span>}>
           {(page) => (
-            <span
-              {...stylex.attrs(
-                styles.pill,
-                page().published_revision === page().revision && styles.live,
-              )}
-            >
-              {page().published_revision === null
-                ? "Unpublished"
-                : page().published_revision === page().revision
-                  ? "Published"
-                  : "Draft changes"}
+            <span {...stylex.attrs(styles.statusCell)}>
+              <span
+                {...stylex.attrs(
+                  styles.pill,
+                  page().published_revision === page().revision && styles.live,
+                )}
+              >
+                {page().published_revision === null
+                  ? "Unpublished"
+                  : page().published_revision === page().revision
+                    ? "Published"
+                    : "Draft changes"}
+              </span>
+              <Show when={p.schedules.find((s) => s.page_id === page().id)}>
+                {(schedule) => (
+                  <span {...stylex.attrs(styles.pill, styles.scheduled)}>
+                    {schedule().error
+                      ? "Schedule failed"
+                      : `Scheduled ${formatTime(schedule().publish_at)}`}
+                  </span>
+                )}
+              </Show>
             </span>
           )}
         </Show>
