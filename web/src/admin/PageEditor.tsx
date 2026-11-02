@@ -1,10 +1,20 @@
 import { createSignal, For, lazy, Show } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
-import type { Block, ComponentDef, Page, Region, Review, Schedule, Template } from "../types";
+import type {
+  Block,
+  ComponentDef,
+  Media,
+  Page,
+  Region,
+  Review,
+  Schedule,
+  Template,
+} from "../types";
 import { formatTime, localInputSeconds, localInputValue, timeZone } from "../lib/time";
 import { BlockRenderer, blocksInTemplateOrder } from "../components/Renderer";
 import { common } from "../common.stylex";
 import { joinPath, pageParentPaths, parentPath, pathSegment } from "./pageTree";
+import { MediaField } from "./MediaLibrary";
 const RichTextEditor = lazy(() => import("./RichTextEditor"), { export: "RichTextEditor" });
 const styles = stylex.create({
   editor: {
@@ -144,6 +154,8 @@ type Props = {
   pages: Page[];
   templates: Template[];
   components: ComponentDef[];
+  media: Media[];
+  onMediaUploaded: () => Promise<void>;
   isAdmin: boolean;
   paths: string[];
   review?: Review;
@@ -575,46 +587,59 @@ export function PageEditor(p: Props) {
                             <For each={def?.fields}>
                               {(field) => (
                                 <Show
-                                  when={field.kind !== "richtext"}
+                                  when={field.kind !== "media"}
                                   fallback={
-                                    <div {...stylex.attrs(common.label)}>
-                                      <span>
-                                        {field.label}
-                                        {field.required ? " *" : ""}
-                                      </span>
-                                      <RichTextEditor
-                                        field={field}
-                                        pages={p.pages}
-                                        value={block().fields[field.name] || ""}
-                                        onChange={(value) => changeField(id, field.name, value)}
-                                      />
-                                    </div>
+                                    <MediaField
+                                      field={field}
+                                      value={block().fields[field.name] || ""}
+                                      media={p.media}
+                                      onChange={(value) => changeField(id, field.name, value)}
+                                      onUploaded={p.onMediaUploaded}
+                                    />
                                   }
                                 >
-                                  <label {...stylex.attrs(common.label)}>
-                                    {field.label}
-                                    {field.required ? " *" : ""}
-                                    {field.kind === "textarea" ? (
-                                      <textarea
-                                        {...stylex.attrs(common.control, common.textarea)}
-                                        required={field.required}
-                                        value={block().fields[field.name] || ""}
-                                        onInput={(e) =>
-                                          changeField(id, field.name, e.currentTarget.value)
-                                        }
-                                      />
-                                    ) : (
-                                      <input
-                                        {...stylex.attrs(common.control)}
-                                        type="text"
-                                        required={field.required}
-                                        value={block().fields[field.name] || ""}
-                                        onInput={(e) =>
-                                          changeField(id, field.name, e.currentTarget.value)
-                                        }
-                                      />
-                                    )}
-                                  </label>
+                                  <Show
+                                    when={field.kind !== "richtext"}
+                                    fallback={
+                                      <div {...stylex.attrs(common.label)}>
+                                        <span>
+                                          {field.label}
+                                          {field.required ? " *" : ""}
+                                        </span>
+                                        <RichTextEditor
+                                          field={field}
+                                          pages={p.pages}
+                                          value={block().fields[field.name] || ""}
+                                          onChange={(value) => changeField(id, field.name, value)}
+                                        />
+                                      </div>
+                                    }
+                                  >
+                                    <label {...stylex.attrs(common.label)}>
+                                      {field.label}
+                                      {field.required ? " *" : ""}
+                                      {field.kind === "textarea" ? (
+                                        <textarea
+                                          {...stylex.attrs(common.control, common.textarea)}
+                                          required={field.required}
+                                          value={block().fields[field.name] || ""}
+                                          onInput={(e) =>
+                                            changeField(id, field.name, e.currentTarget.value)
+                                          }
+                                        />
+                                      ) : (
+                                        <input
+                                          {...stylex.attrs(common.control)}
+                                          type="text"
+                                          required={field.required}
+                                          value={block().fields[field.name] || ""}
+                                          onInput={(e) =>
+                                            changeField(id, field.name, e.currentTarget.value)
+                                          }
+                                        />
+                                      )}
+                                    </label>
+                                  </Show>
                                 </Show>
                               )}
                             </For>
@@ -719,7 +744,7 @@ export function PageEditor(p: Props) {
                         )}
                         onClick={() => setSelected(block.id)}
                       >
-                        <BlockRenderer block={block} definition={d()} />
+                        <BlockRenderer block={block} definition={d()} media={p.media} />
                       </div>
                     )}
                   </Show>

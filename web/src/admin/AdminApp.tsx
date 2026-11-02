@@ -12,6 +12,7 @@ import { OrganizationEditor } from "./OrganizationEditor";
 import { AccountEditor } from "./AccountEditor";
 import { ReviewOverview } from "./ReviewOverview";
 import { PackageExport, PackageInstall } from "./Packages";
+import { MediaLibrary } from "./MediaLibrary";
 import { common } from "../common.stylex";
 import {
   buildPageTree,
@@ -195,7 +196,14 @@ export function AdminApp() {
   const passwords = () => authConfig.value()?.method === "password";
   const data = () => (request.error() ? undefined : request.value());
   const refetch = request.refetch;
-  type Section = "pages" | "templates" | "components" | "reviews" | "organization" | "account";
+  type Section =
+    | "pages"
+    | "media"
+    | "templates"
+    | "components"
+    | "reviews"
+    | "organization"
+    | "account";
   const [section, setSection] = createSignal<Section>("pages");
   const [pageId, setPageId] = createSignal<string>();
   const [blockId, setBlockId] = createSignal<string>();
@@ -293,6 +301,16 @@ export function AdminApp() {
                 {data()?.reviews.filter((r) => r.status === "submitted").length || 0} pending
               </span>
             </button>
+            <button
+              {...stylex.attrs(
+                common.button,
+                styles.navButton,
+                section() === "media" && styles.active,
+              )}
+              onClick={() => changeSection("media")}
+            >
+              Media <span>{data()?.media.length ?? 0}</span>
+            </button>
             <Show when={data()?.access.role === "admin"}>
               <button
                 {...stylex.attrs(
@@ -384,122 +402,135 @@ export function AdminApp() {
                   }
                 >
                   <Show
-                    when={section() !== "reviews"}
+                    when={section() !== "media"}
                     fallback={
-                      <ReviewOverview
-                        reviews={d().reviews}
-                        role={d().access.role}
+                      <MediaLibrary
+                        media={d().media}
+                        isAdmin={d().access.role === "admin"}
                         onRefresh={refresh}
-                        onOpen={choose}
                       />
                     }
                   >
                     <Show
-                      when={section() === "pages"}
+                      when={section() !== "reviews"}
                       fallback={
-                        <Show when={d().access.role === "admin"}>
-                          <For each={[navigation()]}>
-                            {() => (
-                              <DefinitionEditor
-                                kind={section() as "templates" | "components"}
-                                initialId={definitionId()}
-                                templates={d().templates}
-                                components={d().components}
-                                onDirty={setDirty}
-                                onSave={async (value, isNew) => {
-                                  const result =
-                                    section() === "templates"
-                                      ? await (isNew
-                                          ? api.createTemplate(value as Omit<Template, "id">)
-                                          : api.updateTemplate(value as Template))
-                                      : await (isNew
-                                          ? api.createComponent(value as Omit<ComponentDef, "id">)
-                                          : api.updateComponent(value as ComponentDef));
-                                  await refresh();
-                                  setDefinitionId(result.id);
-                                  return result;
-                                }}
-                                onDelete={async (id) => {
-                                  await (section() === "templates"
-                                    ? api.deleteTemplate(id)
-                                    : api.deleteComponent(id));
-                                  setDefinitionId();
-                                  await refresh();
-                                }}
-                              />
-                            )}
-                          </For>
-                        </Show>
+                        <ReviewOverview
+                          reviews={d().reviews}
+                          role={d().access.role}
+                          onRefresh={refresh}
+                          onOpen={choose}
+                        />
                       }
                     >
                       <Show
-                        when={page() && pageId()}
+                        when={section() === "pages"}
                         fallback={
-                          <PageHome
-                            pages={d().pages}
-                            schedules={d().schedules}
-                            templates={d().templates}
-                            paths={d().access.role === "editor" ? d().access.paths : ["/"]}
-                            isAdmin={d().access.role === "admin"}
-                            onInstalled={refresh}
-                            onChoose={choose}
-                            onCreate={async (value) => {
-                              const created = await api.createPage(value);
-                              await refresh();
-                              setPageId(created.id);
-                            }}
-                          />
+                          <Show when={d().access.role === "admin"}>
+                            <For each={[navigation()]}>
+                              {() => (
+                                <DefinitionEditor
+                                  kind={section() as "templates" | "components"}
+                                  initialId={definitionId()}
+                                  templates={d().templates}
+                                  components={d().components}
+                                  onDirty={setDirty}
+                                  onSave={async (value, isNew) => {
+                                    const result =
+                                      section() === "templates"
+                                        ? await (isNew
+                                            ? api.createTemplate(value as Omit<Template, "id">)
+                                            : api.updateTemplate(value as Template))
+                                        : await (isNew
+                                            ? api.createComponent(value as Omit<ComponentDef, "id">)
+                                            : api.updateComponent(value as ComponentDef));
+                                    await refresh();
+                                    setDefinitionId(result.id);
+                                    return result;
+                                  }}
+                                  onDelete={async (id) => {
+                                    await (section() === "templates"
+                                      ? api.deleteTemplate(id)
+                                      : api.deleteComponent(id));
+                                    setDefinitionId();
+                                    await refresh();
+                                  }}
+                                />
+                              )}
+                            </For>
+                          </Show>
                         }
                       >
-                        {(id) => (
-                          <For each={[`${id()}:${navigation()}`]}>
-                            {() => (
-                              <PageEditor
-                                page={page()!}
-                                initialBlockId={blockId()}
-                                pages={d().pages}
-                                templates={d().templates}
-                                components={d().components}
-                                isAdmin={d().access.role === "admin"}
-                                paths={d().access.role === "editor" ? d().access.paths : ["/"]}
-                                review={d().reviews.find((r) => r.id === pageId())}
-                                schedule={d().schedules.find((s) => s.page_id === pageId())}
-                                canCancelSchedule={d().access.role !== "editor"}
-                                onSchedule={async (value, publishAt) => {
-                                  await api.schedule(value, publishAt);
-                                  await refresh();
-                                  return value;
-                                }}
-                                onCancelSchedule={async (value) => {
-                                  await api.cancelSchedule(value.id);
-                                  await refresh();
-                                }}
-                                onSubmit={async (value, publishAt) => {
-                                  await api.submit(value, publishAt);
-                                  await refresh();
-                                  return value;
-                                }}
-                                onDirty={setDirty}
-                                onSave={async (value) => {
-                                  const result = await api.savePage(value);
-                                  await refresh();
-                                  return result;
-                                }}
-                                onPublish={async (value) => {
-                                  const result = await api.publish(value);
-                                  await refresh();
-                                  return result;
-                                }}
-                                onDelete={async (value) => {
-                                  await api.deletePage(value.id);
-                                  setPageId();
-                                  setDirty(false);
-                                  await refresh();
-                                }}
-                              />
-                            )}
-                          </For>
-                        )}
+                        <Show
+                          when={page() && pageId()}
+                          fallback={
+                            <PageHome
+                              pages={d().pages}
+                              schedules={d().schedules}
+                              templates={d().templates}
+                              paths={d().access.role === "editor" ? d().access.paths : ["/"]}
+                              isAdmin={d().access.role === "admin"}
+                              onInstalled={refresh}
+                              onChoose={choose}
+                              onCreate={async (value) => {
+                                const created = await api.createPage(value);
+                                await refresh();
+                                setPageId(created.id);
+                              }}
+                            />
+                          }
+                        >
+                          {(id) => (
+                            <For each={[`${id()}:${navigation()}`]}>
+                              {() => (
+                                <PageEditor
+                                  page={page()!}
+                                  initialBlockId={blockId()}
+                                  pages={d().pages}
+                                  templates={d().templates}
+                                  components={d().components}
+                                  media={d().media}
+                                  onMediaUploaded={refresh}
+                                  isAdmin={d().access.role === "admin"}
+                                  paths={d().access.role === "editor" ? d().access.paths : ["/"]}
+                                  review={d().reviews.find((r) => r.id === pageId())}
+                                  schedule={d().schedules.find((s) => s.page_id === pageId())}
+                                  canCancelSchedule={d().access.role !== "editor"}
+                                  onSchedule={async (value, publishAt) => {
+                                    await api.schedule(value, publishAt);
+                                    await refresh();
+                                    return value;
+                                  }}
+                                  onCancelSchedule={async (value) => {
+                                    await api.cancelSchedule(value.id);
+                                    await refresh();
+                                  }}
+                                  onSubmit={async (value, publishAt) => {
+                                    await api.submit(value, publishAt);
+                                    await refresh();
+                                    return value;
+                                  }}
+                                  onDirty={setDirty}
+                                  onSave={async (value) => {
+                                    const result = await api.savePage(value);
+                                    await refresh();
+                                    return result;
+                                  }}
+                                  onPublish={async (value) => {
+                                    const result = await api.publish(value);
+                                    await refresh();
+                                    return result;
+                                  }}
+                                  onDelete={async (value) => {
+                                    await api.deletePage(value.id);
+                                    setPageId();
+                                    setDirty(false);
+                                    await refresh();
+                                  }}
+                                />
+                              )}
+                            </For>
+                          )}
+                        </Show>
                       </Show>
                     </Show>
                   </Show>

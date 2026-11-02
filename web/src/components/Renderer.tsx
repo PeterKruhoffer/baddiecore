@@ -1,10 +1,11 @@
 import { For, Show } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import * as stylex from "@stylexjs/stylex";
-import type { Block, ComponentDef, RendererName } from "../types";
+import type { Block, ComponentDef, Media, RendererName } from "../types";
 import { RichText, RichTextNode } from "./RichText";
 import { richTextDocument, safeHref } from "../lib/richtext";
 import { common } from "../common.stylex";
+import { findMedia, mediaUrl } from "../lib/api";
 const styles = stylex.create({
   render: { padding: "70px clamp(30px, 8vw, 90px)" },
   heading: {
@@ -39,6 +40,8 @@ const styles = stylex.create({
     padding: 45,
   },
   calloutParagraph: { color: "#d1cbc4" },
+  image: { display: "block", maxWidth: "100%", height: "auto", borderRadius: 10, marginBottom: 24 },
+  thumbnail: { display: "block", maxWidth: 160, maxHeight: 120, borderRadius: 4 },
   cards: { backgroundColor: "#f6f1e8" },
   cardGrid: {
     display: "grid",
@@ -57,13 +60,40 @@ const styles = stylex.create({
     padding: 25,
   },
 });
-type Props = { block: Block; definition: ComponentDef };
+/** `media` resolves alt text for the media IDs that blocks reference. */
+type Props = { block: Block; definition: ComponentDef; media: Media[] };
+function Image(p: Props & { name: string; thumbnail?: boolean }) {
+  const item = () =>
+    p.definition.fields.some((f) => f.name === p.name && f.kind === "media")
+      ? findMedia(p.media, p.block.fields[p.name])
+      : undefined;
+  return (
+    <Show when={item()}>
+      {(item) => (
+        <img
+          {...stylex.attrs(p.thumbnail ? styles.thumbnail : styles.image)}
+          src={mediaUrl(item().id)}
+          alt={item().alt}
+        />
+      )}
+    </Show>
+  );
+}
 function FieldValue(p: Props & { name: string; inline?: boolean; fallback?: string }) {
   const field = () => p.definition.fields.find((field) => field.name === p.name);
   const value = () => p.block.fields[p.name] || p.fallback || "";
   return (
-    <Show when={field()?.kind === "richtext"} fallback={value()}>
-      <RichText value={value()} config={field()?.richtext} inline={p.inline} />
+    <Show
+      when={field()?.kind !== "media"}
+      fallback={
+        <Show when={p.block.fields[p.name]} fallback={p.fallback}>
+          <Image {...p} thumbnail />
+        </Show>
+      }
+    >
+      <Show when={field()?.kind === "richtext"} fallback={value()}>
+        <RichText value={value()} config={field()?.richtext} inline={p.inline} />
+      </Show>
     </Show>
   );
 }
@@ -106,6 +136,7 @@ export function blocksInTemplateOrder(blocks: Block[], regions: { name: string }
 export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
   hero: (p) => (
     <section {...stylex.attrs(styles.render, styles.hero)}>
+      <Image {...p} name="image" />
       <p {...stylex.attrs(common.eyebrow, styles.paragraph)}>
         <FieldValue {...p} name="eyebrow" inline />
       </p>
@@ -120,6 +151,7 @@ export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
   ),
   text: (p) => (
     <section {...stylex.attrs(styles.render, styles.text)}>
+      <Image {...p} name="image" />
       <h2 {...stylex.attrs(styles.heading, styles.h2)}>
         <FieldValue {...p} name="title" inline fallback="Untitled section" />
       </h2>
@@ -129,6 +161,7 @@ export const renderers: Record<RendererName, (p: Props) => JSX.Element> = {
   callout: (p) => (
     <section {...stylex.attrs(styles.render, styles.callout)}>
       <div>
+        <Image {...p} name="image" />
         <h2 {...stylex.attrs(styles.heading, styles.h2)}>
           <FieldValue {...p} name="title" inline fallback="A useful callout" />
         </h2>

@@ -568,6 +568,7 @@ function ComponentFields(p: { value: ComponentDef; onChange: (v: ComponentDef) =
                       <option>textarea</option>
                       <option>url</option>
                       <option value="richtext">Rich text</option>
+                      <option value="media">Media</option>
                     </select>
                   </label>
                   <label {...stylex.attrs(common.label, styles.check)}>

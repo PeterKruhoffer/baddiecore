@@ -2,6 +2,8 @@ import type {
   Bootstrap,
   ComponentDef,
   Content,
+  Media,
+  MediaId,
   Organization,
   PackageResult,
   Page,
@@ -33,6 +35,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw await failure(response);
   return response.status === 204 ? (undefined as T) : response.json();
 }
+/** Resolves a media field's stored value to its library item, if any. */
+export const findMedia = (media: Media[], value: string | undefined) =>
+  value ? media.find((item) => item.id === value) : undefined;
+export const mediaUrl = (id: MediaId) => `/media/${encodeURIComponent(id)}`;
 export const api = {
   authConfig: () =>
     request<{ method: "password" | "redirect"; label?: string }>("/api/auth/config"),
@@ -132,6 +138,20 @@ export const api = {
       headers: { "Content-Type": "application/zip" },
       body: file,
     }),
+  /** The server checks the bytes; the browser's Content-Type is not trusted. */
+  uploadMedia: (file: File) =>
+    request<Media>(`/api/admin/media?filename=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    }),
+  updateMedia: (id: MediaId, alt: string) =>
+    request<Media>(`/api/admin/media/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ alt }),
+    }),
+  deleteMedia: (id: MediaId) =>
+    request<void>(`/api/admin/media/${encodeURIComponent(id)}`, { method: "DELETE" }),
   updateComponent: (value: ComponentDef) =>
     request<ComponentDef>(`/api/admin/components/${value.id}`, {
       method: "PUT",

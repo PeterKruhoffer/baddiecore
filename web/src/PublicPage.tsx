@@ -29,7 +29,9 @@ export function PublicPage() {
             {(block) => {
               const def = data.components.find((c) => c.id === block.component_id);
               return (
-                <Show when={def}>{(d) => <BlockRenderer block={block} definition={d()} />}</Show>
+                <Show when={def}>
+                  {(d) => <BlockRenderer block={block} definition={d()} media={data.media} />}
+                </Show>
               );
             }}
           </For>

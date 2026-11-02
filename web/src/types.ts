@@ -1,4 +1,16 @@
-export type FieldKind = "text" | "textarea" | "url" | "richtext";
+export type FieldKind = "text" | "textarea" | "url" | "richtext" | "media";
+/** A server-issued media ID. Only API responses produce one; a media field stores it as its value. */
+export type MediaId = string & { readonly __brand: "MediaId" };
+export interface Media {
+  id: MediaId;
+  filename: string;
+  content_type: string;
+  size: number;
+  alt: string;
+  uploaded_by: string;
+  /** Unix seconds. */
+  created_at: number;
+}
 export type RichTextFeature =
   | "bold"
   | "italic"
@@ -67,6 +79,8 @@ export interface Bootstrap {
   access: Access;
   reviews: Review[];
   schedules: Schedule[];
+  /** Newest first. */
+  media: Media[];
 }
 export interface Schedule {
   page_id: string;
@@ -80,6 +94,8 @@ export interface Content {
   page: Page;
   template: Template;
   components: ComponentDef[];
+  /** Metadata of the media the page uses. */
+  media: Media[];
 }
 export type Role = "admin" | "reviewer" | "editor";
 export interface Access {

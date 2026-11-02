@@ -208,7 +208,13 @@ export function ReviewOverview(p: {
                         );
                         return (
                           <Show when={definition}>
-                            {(d) => <BlockRenderer block={block} definition={d()} />}
+                            {(d) => (
+                              <BlockRenderer
+                                block={block}
+                                definition={d()}
+                                media={review.content.media}
+                              />
+                            )}
                           </Show>
                         );
                       }}

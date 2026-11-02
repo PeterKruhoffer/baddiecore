@@ -1,6 +1,6 @@
 import { expect, test, type Page as BrowserPage } from "@playwright/test";
 import { bootstrap } from "./admin-fixture";
-import type { Bootstrap, ComponentDef, Page, Schedule, Template } from "../src/types";
+import type { Bootstrap, ComponentDef, Media, Page, Schedule, Template } from "../src/types";
 
 const organization = {
   revision: 1,
@@ -954,4 +954,47 @@ test.describe("in a daylight-saving time zone", () => {
     await expect(dialog.getByRole("alert")).toContainText("does not exist in your time zone");
     expect(state.writes).toEqual([]);
   });
+});
+
+test("editors upload an image from the page editor's picker, see it previewed and save its ID", async ({
+  page,
+}) => {
+  const data = bootstrap("editor");
+  data.components[0].fields.push({ name: "image", label: "Image", kind: "media", required: false });
+  const state = await openWorkspace(page, data);
+  const uploaded = {
+    id: "8f0c2b7e-1d1a-4c55-9a3e-2f8b9c0d1e2f",
+    filename: "team.png",
+    content_type: "image/png",
+    size: 120,
+    alt: "The team at work",
+    uploaded_by: "test-user",
+    created_at: 1,
+  } as Media;
+  await page.route("**/api/admin/media?*", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("filename")).toBe("team.png");
+    data.media.unshift(uploaded);
+    return route.fulfill({ status: 201, json: uploaded });
+  });
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Choose media" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose image" });
+  await expect(picker).toContainText("No media yet");
+  await picker.getByLabel("Image files").setInputFiles({
+    name: "team.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("\x89PNG\r\n\x1a\n"),
+  });
+  await expect(picker).toBeHidden();
+  const field = page.getByRole("group", { name: "Image" });
+  await expect(field).toContainText("team.png");
+  await expect(
+    page.getByRole("main").getByRole("img", { name: "The team at work" }),
+  ).toHaveAttribute("src", `/media/${uploaded.id}`);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect
+    .poll(() => state.writes.find((w) => w.url === "/api/admin/pages/home")?.body.blocks[0].fields)
+    .toMatchObject({ image: uploaded.id });
+  await field.getByRole("button", { name: "Remove" }).click();
+  await expect(field).toContainText("No image selected");
 });
