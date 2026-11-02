@@ -4263,3 +4263,265 @@ async fn scheduled_publication_cannot_take_an_alias_another_draft_has_claimed() 
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+async fn upload(
+    app: &Router,
+    cookie: &str,
+    filename: &str,
+    bytes: Vec<u8>,
+) -> axum::response::Response {
+    raw_call(
+        app,
+        "POST",
+        &format!("/api/admin/media?filename={filename}"),
+        cookie,
+        bytes,
+    )
+    .await
+}
+
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+
+#[tokio::test]
+async fn media_uploads_are_sniffed_bounded_and_served_immutably() {
+    let app = setup().await;
+    let response = upload(&app.app, &app.cookie, "logo.png", PNG.to_vec()).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let media: baddiecore::media::Media = read(response).await;
+    assert_eq!(
+        (
+            media.filename.as_str(),
+            media.content_type.as_str(),
+            media.size,
+            media.uploaded_by.as_str()
+        ),
+        ("logo.png", "image/png", PNG.len() as i64, "admin")
+    );
+    let uri = format!("/media/{}", media.id.as_str());
+    for method in ["GET", "HEAD"] {
+        let response = call(&app.app, method, &uri, None, None::<&Value>).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            headers[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let expected: &[u8] = if method == "GET" { PNG } else { b"" };
+        assert_eq!(body_bytes(response).await, expected);
+    }
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            "/media/00000000-0000-4000-8000-000000000000",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // The file's bytes decide its type, not its name or the request's Content-Type.
+    let response = upload(
+        &app.app,
+        &app.cookie,
+        "x.png",
+        b"<html><script>alert(1)</script>".to_vec(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        upload(&app.app, &app.cookie, "%20", PNG.to_vec())
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // Uploads escape the global 1 MiB request limit but stop at 10 MiB.
+    let mut large = PNG.to_vec();
+    large.resize(2 * 1024 * 1024, 0);
+    let response = upload(&app.app, &app.cookie, "large.png", large).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let large: baddiecore::media::Media = read(response).await;
+    assert_eq!(large.size, 2 * 1024 * 1024);
+    let mut huge = PNG.to_vec();
+    huge.resize(10 * 1024 * 1024 + 1, 0);
+    assert_eq!(
+        upload(&app.app, &app.cookie, "huge.png", huge)
+            .await
+            .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    let listed = bootstrap(&app).await.media;
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|m| m.id == large.id) && listed.iter().any(|m| m.id == media.id));
+
+    let page = json!({"title":"Media","slug":"/media","template_id":"homepage"});
+    assert_eq!(
+        send(&app, "POST", "/api/admin/pages", Some(&page)).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn media_fields_reference_uploads_and_block_deleting_used_media() {
+    let app = setup().await;
+    members(&app).await;
+    let media: baddiecore::media::Media =
+        read(upload(&app.app, &app.cookie, "hero.png", PNG.to_vec()).await).await;
+    let mut page = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    for unknown in ["00000000-0000-4000-8000-000000000000", "hero.png"] {
+        page.blocks[0].fields.insert("image".into(), unknown.into());
+        let response = call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: Value = read(response).await;
+        assert!(
+            error["error"].as_str().unwrap().contains("image"),
+            "{error}"
+        );
+    }
+    page.blocks[0]
+        .fields
+        .insert("image".into(), media.id.as_str().into());
+    page = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page),
+        )
+        .await,
+    )
+    .await;
+
+    // A package that references media the target installation lacks is refused.
+    let package = export_package(&app, "/").await;
+    let other = setup().await;
+    let response = raw_call(
+        &other.app,
+        "POST",
+        "/api/admin/package",
+        &other.cookie,
+        package,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: Value = read(response).await;
+    assert!(
+        error["error"].as_str().unwrap().contains("image"),
+        "{error}"
+    );
+
+    let publish = json!({"revision": page.revision});
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/admin/pages/home/publish",
+            Some(&publish)
+        )
+        .await,
+        StatusCode::OK
+    );
+    let content: Content =
+        read(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await).await;
+    assert_eq!(content.media, vec![media.clone()]);
+
+    let uri = format!("/api/admin/media/{}", media.id.as_str());
+    let response = call(&app.app, "DELETE", &uri, Some(&app.cookie), None::<&Value>).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value = read(response).await;
+    assert_eq!(error["error"], "media is still used by /");
+    // The live snapshot still shows the image after the draft drops it.
+    page.blocks[0].fields.remove("image");
+    assert_eq!(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&page)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app.app, "DELETE", &uri, Some(&app.cookie), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+
+    // Editors may upload and describe media, but only administrators delete it.
+    let members = member_app(&app);
+    let response = upload(&members, "editor", "editor.png", PNG.to_vec()).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let uploaded: baddiecore::media::Media = read(response).await;
+    assert_eq!(uploaded.uploaded_by, "editor");
+    let uri = format!("/api/admin/media/{}", uploaded.id.as_str());
+    let response = call(
+        &members,
+        "PUT",
+        &uri,
+        Some("editor"),
+        Some(&json!({"alt":"A logo"})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        read::<baddiecore::media::Media>(response).await.alt,
+        "A logo"
+    );
+    assert_eq!(
+        call(&members, "DELETE", &uri, Some("editor"), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&members, "DELETE", &uri, Some("admin"), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(&members, "DELETE", &uri, Some("admin"), None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let public = format!("/media/{}", uploaded.id.as_str());
+    assert_eq!(
+        call(&app.app, "GET", &public, None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}

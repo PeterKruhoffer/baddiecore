@@ -300,10 +300,13 @@ pub(super) fn current_content(db: &mut impl Queryable, page: Page) -> Result<Con
         .ok_or_else(ApiError::not_found)?;
     let mut components: Vec<Component> = definitions.components.into_values().collect();
     components.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut media: Vec<media::Media> = definitions.media.into_values().collect();
+    media.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(Content {
         page,
         template,
         components,
+        media,
     })
 }
 

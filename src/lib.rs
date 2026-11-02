@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     Extension, Json, Router,
-    extract::{Path as AxumPath, Query, Request, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 pub mod auth;
 pub mod headless;
+pub mod media;
 mod package;
 pub mod richtext;
 pub mod schedule;
@@ -45,6 +46,8 @@ pub enum FieldKind {
     Textarea,
     Url,
     Richtext,
+    /// A `MediaId`, or empty.
+    Media,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Component {
@@ -103,6 +106,7 @@ pub struct Bootstrap {
     pub access: workflow::Access,
     pub reviews: Vec<workflow::Review>,
     pub schedules: Vec<schedule::Schedule>,
+    pub media: Vec<media::Media>,
 }
 
 struct StoredData {
@@ -115,6 +119,9 @@ pub struct Content {
     pub page: Page,
     pub template: Template,
     pub components: Vec<Component>,
+    /// Metadata of the media the page's blocks reference, sorted by ID.
+    #[serde(default)]
+    pub media: Vec<media::Media>,
 }
 
 #[derive(Clone)]
@@ -228,6 +235,8 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS page_paths(path VARBINARY(2048) PRIMARY KEY, page_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, INDEX(page_id), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     // 12: at most one snapshot per page waiting to go live at publish_at (Unix seconds). See schedule.
     "CREATE TABLE IF NOT EXISTS scheduled_publications(page_id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, publish_at BIGINT NOT NULL, revision BIGINT NOT NULL, scheduled_by VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, error TEXT NULL, data LONGTEXT NOT NULL, INDEX(publish_at), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    // 13: uploaded images. `data` holds the metadata; bytes never change after upload. See media.
+    "CREATE TABLE IF NOT EXISTS media(id VARCHAR(255) COLLATE utf8mb4_bin PRIMARY KEY, data LONGTEXT NOT NULL, bytes LONGBLOB NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 ];
 
 /// Applies pending migrations, then creates the organization record and seed content when missing.
@@ -316,6 +325,7 @@ fn seed(db: &Pool) -> Result<()> {
                     ("body", false, FieldKind::Richtext),
                     ("button_label", false, FieldKind::Text),
                     ("button_url", false, FieldKind::Url),
+                    ("image", false, FieldKind::Media),
                 ],
             ),
             (
@@ -540,11 +550,19 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
             put(update_component).delete(delete_component),
         )
         .route("/package", get(package::export).post(package::install))
+        .route("/media/{id}", put(media::update).delete(media::delete))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    // Merged after the 1 MiB layer below, which would otherwise cap uploads too.
+    let upload = Router::new()
+        .route("/api/admin/media", post(media::upload))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        .layer(DefaultBodyLimit::max(media::MAX_BYTES))
+        .with_state(state.clone());
     let index = static_dir.as_ref().join("index.html");
     Router::new()
         .route("/health", get(health))
         .route("/api/content", get(content))
+        .route("/media/{id}", get(media::serve))
         .nest("/api/headless", headless::routes(state.clone()))
         .nest("/api/admin", admin)
         .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
@@ -552,6 +570,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .merge(state.auth.routes())
         .layer(middleware::from_fn_with_state(state, redirect_alias))
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
+        .merge(upload)
 }
 
 async fn redirect_alias(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -638,6 +657,7 @@ async fn bootstrap(
                 access,
                 reviews,
                 schedules,
+                media: media::list(db)?,
             }))
         })
         .await
@@ -1119,6 +1139,7 @@ fn validate_schema_change(
             .components
             .insert(component.id.clone(), component.clone());
     }
+    definitions.load_media(db, &pages)?;
     for page in &pages {
         definitions.validate(page)?;
     }
@@ -1133,6 +1154,8 @@ fn validate_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
 struct Definitions {
     templates: HashMap<String, Template>,
     components: HashMap<String, Component>,
+    /// Existing media that the pages' media fields reference. Missing IDs are absent.
+    media: HashMap<media::MediaId, media::Media>,
 }
 
 impl Definitions {
@@ -1155,10 +1178,27 @@ impl Definitions {
                 }
             }
         }
-        Ok(Self {
+        let mut definitions = Self {
             templates,
             components,
-        })
+            media: HashMap::new(),
+        };
+        definitions.load_media(db, pages)?;
+        Ok(definitions)
+    }
+
+    /// Loads media referenced under the current component definitions.
+    fn load_media(&mut self, db: &mut impl Queryable, pages: &[Page]) -> Result<()> {
+        for page in pages {
+            for id in media::referenced(page, &self.components) {
+                if !self.media.contains_key(&id)
+                    && let Some(item) = media::find(db, &id)?
+                {
+                    self.media.insert(id, item);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate(&self, page: &Page) -> Result<()> {
@@ -1201,7 +1241,7 @@ impl Definitions {
                 .components
                 .get(&block.component_id)
                 .ok_or_else(ApiError::not_found)?;
-            validate_block(block, component)?;
+            validate_block(block, component, &self.media)?;
         }
         for region in &template.regions {
             if counts.get(region.name.as_str()).copied().unwrap_or(0) > region.max_components {
@@ -1214,7 +1254,11 @@ impl Definitions {
         Ok(())
     }
 }
-fn validate_block(block: &Block, component: &Component) -> Result<()> {
+fn validate_block(
+    block: &Block,
+    component: &Component,
+    media: &HashMap<media::MediaId, media::Media>,
+) -> Result<()> {
     for key in block.fields.keys() {
         if !component.fields.iter().any(|f| &f.name == key) {
             return Err(ApiError::bad(format!("unknown field: {key}")));
@@ -1231,6 +1275,15 @@ fn validate_block(block: &Block, component: &Component) -> Result<()> {
         }
         if matches!(field.kind, FieldKind::Url) && !value.is_empty() {
             validate_url(value)?;
+        }
+        if matches!(field.kind, FieldKind::Media)
+            && !value.is_empty()
+            && !media::MediaId::parse(value).is_some_and(|id| media.contains_key(&id))
+        {
+            return Err(ApiError::bad(format!(
+                "field {} must reference uploaded media",
+                field.name
+            )));
         }
         if matches!(field.kind, FieldKind::Richtext) {
             let has_content = richtext::validate(value, field.richtext.as_ref())?;
@@ -1351,7 +1404,7 @@ fn validate_slug(value: &str) -> Result<()> {
             })
             && !matches!(
                 segments[0].to_ascii_lowercase().as_str(),
-                "admin" | "api" | "health" | "assets"
+                "admin" | "api" | "health" | "assets" | "media"
             );
         if valid {
             Ok(())
