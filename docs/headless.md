@@ -20,11 +20,11 @@ curl --fail --silent --show-error "$CMS_URL/api/headless/content?slug=%2Fabout" 
   -H "Authorization: Bearer $BADDIE_CONTENT_API_KEY"
 ```
 
-`GET /api/headless/pages` lists published `{id, title, slug, template_id, revision}` records ordered by published path. Use it to discover routes or build navigation. `GET /api/headless/content?slug=/about` returns `{page, template, components}` from the published snapshot. The page contains ordered blocks with `id`, `component_id`, `region`, and `fields`. Render regions in `template.regions` order and preserve block order within each region. Resolve each block's definition through `component_id`. Unpublished paths return 404. Draft changes and definition updates stay invisible until publication. See [CONTRACT.md](../CONTRACT.md#headless-integration) for the API contract.
+`GET /api/headless/pages` lists published `{id, title, slug, template_id, revision}` records ordered by published path. Use it to discover routes or build navigation. `GET /api/headless/content?slug=/about` returns `{page, template, components, media}` from the published snapshot. The page contains ordered blocks with `id`, `component_id`, `region`, and `fields`. Render regions in `template.regions` order and preserve block order within each region. Resolve each block's definition through `component_id`. A `media` field holds a media ID, or is empty; find its `{id, filename, content_type, size, alt}` in `media` and load the image from the public `GET /media/{id}`, which needs no key and may be cached forever. Unpublished paths return 404. Draft changes and definition updates stay invisible until publication. See [CONTRACT.md](../CONTRACT.md#headless-integration) for the API contract.
 
 ## Register your app's components
 
-Choose a stable component ID, such as `shop-product-promo`, and keep it in your app's renderer map. Registration sends only the field schema, never JavaScript or HTML. The CMS supports `text`, `textarea`, `url`, and `richtext` string fields with required flags. Rich-text strings contain Tiptap JSON; see [rich-text configuration and rendering](editing.md#configure-rich-text) for supported nodes, marks, and site icons.
+Choose a stable component ID, such as `shop-product-promo`, and keep it in your app's renderer map. Registration sends only the field schema, never JavaScript or HTML. The CMS supports `text`, `textarea`, `url`, `richtext`, and `media` string fields with required flags. Rich-text strings contain Tiptap JSON; see [rich-text configuration and rendering](editing.md#configure-rich-text) for supported nodes, marks, and site icons.
 
 ```sh
 curl --fail --silent --show-error -X PUT \

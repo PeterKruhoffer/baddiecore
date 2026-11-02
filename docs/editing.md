@@ -6,13 +6,19 @@
 
 - Pages have a path, template, ordered component instances, and a draft revision.
 - Templates define named regions, component allowlists, and maximum counts. An empty allowlist permits nothing.
-- Component definitions have typed text, textarea, URL, or rich-text fields and a renderer. Hero, text, callout, and cards renderers ship with this version. Cards render one body line per card, or one top-level rich-text block per card. External components use a content preview in the CMS and renderer code in your connected app.
+- Component definitions have typed text, textarea, URL, rich-text, or media fields and a renderer. Hero, text, callout, and cards renderers ship with this version. Cards render one body line per card, or one top-level rich-text block per card. External components use a content preview in the CMS and renderer code in your connected app.
 - The experience editor renders the page with the same renderer as the public site. Select a block to edit its fields, add allowed components, drag to reorder, or use the move buttons.
 - Save draft keeps edits private. Administrators can publish directly. Editors submit new or existing pages for review; reviewers approve and publish or request changes with feedback. Publication snapshots the page, template, and component definitions together. Later draft or schema edits do not alter that snapshot.
 - To publish later, choose **At a specific date and time** in the Publish or Submit for review dialog. See [scheduled publishing](#scheduled-publishing).
 - Concurrent page saves return a conflict instead of overwriting another revision. Template and component changes that would invalidate existing drafts are rejected.
 
 The sidebar keeps the page tree under Site available while editing. Administrators also see templates and components under System. Search finds accessible saved pages by title or path, individual blocks by component name or field text, and administrator-only definitions by name or description. Multiple search words must all match the same result. A block result opens that page with its properties selected; navigation asks before discarding unsaved edits. Search does not include unsaved changes or older published snapshots.
+
+## Media
+
+Open **Media** in the sidebar to see every uploaded image. Choose **Upload images**, or drop files on the screen, to add PNG, JPEG, GIF, WebP or AVIF images up to 10 MB each. The server checks each file's contents, not its name or type, and rejects other files such as SVG or video. Type a description in **Alt text** for screen readers and for when images do not load; it saves when you leave the field. Every member can upload and describe media. Only administrators can delete it, and only while no page draft, published page, scheduled publication or pending review uses it. Otherwise the error names the page paths that still use it. Uploaded files never change; upload a new file to replace an image.
+
+To place an image, select a block with a media field and choose **Choose media**. The picker lists the library and has its own **Upload images** button; uploading one image selects it. **Remove** clears the field. New installations give the Hero component an optional **Image** field. To add images elsewhere, administrators add a field with Type **Media** in **System → Components**; the hero, text and callout renderers display a media field named `image`. A media field stores the image's ID, and saving rejects IDs that are not in the library. Published pages list the images they use, with their alt text at the time of publication.
 
 ## Configure rich text
 
@@ -49,7 +55,7 @@ Choose a parent and a URL segment when creating or moving a page. `/about/team` 
 
 Moving a draft does not change published URLs. Publish each affected page when ready; there are no automatic redirects or link rewrites.
 
-Paths use ASCII letters, numbers, hyphens, underscores, and slash-separated segments, up to 2048 bytes. Paths are case-sensitive. `/admin`, `/api`, `/health`, and `/assets` are reserved. Rules in this version govern placement, counts, required fields, and field types, not audience targeting or personalization.
+Paths use ASCII letters, numbers, hyphens, underscores, and slash-separated segments, up to 2048 bytes. Paths are case-sensitive. `/admin`, `/api`, `/health`, `/assets`, and `/media` are reserved. Rules in this version govern placement, counts, required fields, and field types, not audience targeting or personalization.
 
 ## Route aliases
 
@@ -81,4 +87,4 @@ Content pages don't go into Git. To move pages between installations, for exampl
 2. Share the zip however you like.
 3. On the target installation, choose **Import package** and upload the zip.
 
-Installed pages are drafts; review and publish them as usual. Pages keep their IDs, so installing a newer package of the same pages updates them with a new draft revision. Templates and components missing on the target are added, and existing ones are left unchanged. Deliver definition changes [through Git](content-cli.md) first. The zip uses the same YAML format as the Git export, with a `pages/` directory added. If the pages don't fit the target's definitions, or a different page already uses one of their paths, nothing is installed and the error explains why. Packages are limited to the 1 MiB upload size, which holds a lot of text. Only administrators can export or import packages.
+Installed pages are drafts; review and publish them as usual. Pages keep their IDs, so installing a newer package of the same pages updates them with a new draft revision. Templates and components missing on the target are added, and existing ones are left unchanged. Deliver definition changes [through Git](content-cli.md) first. The zip uses the same YAML format as the Git export, with a `pages/` directory added. If the pages don't fit the target's definitions, or a different page already uses one of their paths, nothing is installed and the error explains why. Packages are limited to the 1 MiB upload size, which holds a lot of text. Packages do not carry media: upload the images on the target first, because installing pages that use media missing there fails and names the field. Image IDs differ between installations, so reselect images in the installed drafts. Only administrators can export or import packages.
