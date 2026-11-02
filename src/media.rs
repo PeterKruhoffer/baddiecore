@@ -10,10 +10,23 @@ use super::*;
 pub(crate) const MAX_BYTES: usize = 10 * 1024 * 1024;
 
 /// Identifies an uploaded media item. The server creates IDs; incoming and
-/// stored values become a `MediaId` only through `parse` or deserialization.
+/// stored values become a `MediaId` only through `parse`, which deserialization uses too.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct MediaId(String);
+
+impl TryFrom<String> for MediaId {
+    type Error = &'static str;
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::parse(&value).ok_or("invalid media id")
+    }
+}
+
+impl From<MediaId> for String {
+    fn from(id: MediaId) -> Self {
+        id.0
+    }
+}
 
 impl MediaId {
     fn new() -> Self {
@@ -156,9 +169,10 @@ pub(super) struct Alt {
 pub(super) async fn update(
     State(state): State<AppState>,
     Extension(editor): Extension<auth::Editor>,
-    AxumPath(id): AxumPath<MediaId>,
+    AxumPath(id): AxumPath<String>,
     Json(input): Json<Alt>,
 ) -> Result<Json<Media>> {
+    let id = MediaId::parse(&id).ok_or_else(ApiError::not_found)?;
     state
         .run_as(editor, move |db, _| {
             let mut media = find(db, &id)?.ok_or_else(ApiError::not_found)?;
@@ -177,8 +191,9 @@ pub(super) async fn update(
 pub(super) async fn delete(
     State(state): State<AppState>,
     Extension(editor): Extension<auth::Editor>,
-    AxumPath(id): AxumPath<MediaId>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode> {
+    let id = MediaId::parse(&id).ok_or_else(ApiError::not_found)?;
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
@@ -232,8 +247,9 @@ fn users(db: &mut impl Queryable, id: &MediaId) -> Result<BTreeSet<String>> {
 /// Public and lock-free, like published content.
 pub(super) async fn serve(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<MediaId>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<Response> {
+    let id = MediaId::parse(&id).ok_or_else(ApiError::not_found)?;
     let (data, bytes) = state
         .read(move |db| {
             db.exec_first::<(String, Vec<u8>), _, _>(
@@ -288,5 +304,6 @@ mod tests {
         assert_eq!(MediaId::parse(&id.as_str().to_uppercase()), None);
         assert_eq!(MediaId::parse(""), None);
         assert_eq!(MediaId::parse("logo.png"), None);
+        assert!(serde_json::from_str::<MediaId>("\"logo.png\"").is_err());
     }
 }
