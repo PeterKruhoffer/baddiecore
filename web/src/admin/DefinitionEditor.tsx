@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show, untrack } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import type {
   ComponentDef,
@@ -133,15 +133,15 @@ const blankComponent = (): ComponentDef => ({
   fields: [{ name: "title", label: "Title", kind: "text", required: true }],
 });
 export function DefinitionEditor(p: Props) {
-  const initial = (p.kind === "templates" ? p.templates : p.components).find(
-    (item) => item.id === p.initialId,
+  const initial = untrack(() =>
+    (p.kind === "templates" ? p.templates : p.components).find((item) => item.id === p.initialId),
   );
   const [selected, setSelected] = createSignal(initial?.id ?? "");
   const [dirty, setDirty] = createSignal(false);
   const [draft, setDraft] = createSignal<Template | ComponentDef>(
     initial
       ? structuredClone(initial)
-      : p.kind === "templates"
+      : untrack(() => p.kind) === "templates"
         ? blankTemplate()
         : blankComponent(),
   );
@@ -672,7 +672,7 @@ function RichTextOptions(p: { field: Field; onChange: (config: RichTextConfig) =
                   <input
                     {...stylex.attrs(common.control)}
                     required
-                    pattern="[a-zA-Z0-9_-]+"
+                    pattern="[a-zA-Z0-9_\-]+"
                     value={icon().id}
                     onInput={(e) => patch({ id: e.currentTarget.value })}
                   />

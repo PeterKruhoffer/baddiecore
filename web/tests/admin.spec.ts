@@ -1,5 +1,5 @@
-import { expect, test, type Page as BrowserPage } from "@playwright/test";
-import { bootstrap } from "./admin-fixture";
+import { type Page as BrowserPage } from "@playwright/test";
+import { bootstrap, expect, test } from "./admin-fixture";
 import type { Bootstrap, ComponentDef, Media, Page, Schedule, Template } from "../src/types";
 
 const organization = {

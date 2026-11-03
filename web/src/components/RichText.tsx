@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, untrack } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import type { JSONContent } from "@tiptap/core";
 import * as stylex from "@stylexjs/stylex";
@@ -82,7 +82,7 @@ export function RichTextNode(p: {
     case "hardBreak":
       return <br />;
     case "icon": {
-      const icon = p.config?.icons?.find((icon) => icon.id === p.node.attrs?.id);
+      const icon = untrack(() => p.config?.icons?.find((icon) => icon.id === p.node.attrs?.id));
       const src = safeHref(icon?.src);
       return icon && src
         ? marked(<img {...stylex.attrs(richTextStyles.icon)} src={src} alt={icon.label} />)

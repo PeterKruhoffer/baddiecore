@@ -1,4 +1,4 @@
-import { createSignal, For, lazy, Show } from "solid-js";
+import { createSignal, For, lazy, Show, untrack } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import type {
   Block,
@@ -170,12 +170,14 @@ type Props = {
   onDirty: (dirty: boolean) => void;
 };
 export function PageEditor(p: Props) {
-  const [draft, setDraft] = createSignal(structuredClone(p.page));
-  const [parent, setParent] = createSignal(parentPath(p.page.slug));
-  const [segment, setSegment] = createSignal(pathSegment(p.page.slug));
-  const [aliasesText, setAliasesText] = createSignal((p.page.aliases ?? []).join("\n"));
+  // The editor is remounted per page, so it seeds its draft from props once.
+  const page = untrack(() => structuredClone(p.page));
+  const [draft, setDraft] = createSignal(page);
+  const [parent, setParent] = createSignal(parentPath(page.slug));
+  const [segment, setSegment] = createSignal(pathSegment(page.slug));
+  const [aliasesText, setAliasesText] = createSignal((page.aliases ?? []).join("\n"));
   const [selected, setSelected] = createSignal<string | undefined>(
-    p.initialBlockId ?? p.page.blocks[0]?.id,
+    untrack(() => p.initialBlockId) ?? page.blocks[0]?.id,
   );
   const [experience, setExperience] = createSignal(true);
   const [mobile, setMobile] = createSignal(false);
@@ -535,7 +537,9 @@ export function PageEditor(p: Props) {
                 <For each={blocks(region.name).map((b) => b.id)}>
                   {(id) => {
                     const block = () => draft().blocks.find((b) => b.id === id)!;
-                    const def = p.components.find((c) => c.id === block().component_id)!;
+                    const def = untrack(() =>
+                      p.components.find((c) => c.id === block().component_id)!,
+                    );
                     return (
                       <div
                         {...stylex.attrs(styles.block, selected() === id && styles.selectedBlock)}
@@ -733,7 +737,7 @@ export function PageEditor(p: Props) {
           >
             <For each={blocksInTemplateOrder(draft().blocks, template()?.regions ?? [])}>
               {(block) => {
-                const def = p.components.find((c) => c.id === block.component_id);
+                const def = untrack(() => p.components.find((c) => c.id === block.component_id));
                 return (
                   <Show when={def}>
                     {(d) => (

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, createUniqueId, For, Show } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, Show, untrack } from "solid-js";
 import { Editor, Node } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import * as stylex from "@stylexjs/stylex";
@@ -219,7 +219,7 @@ export function RichTextEditor(p: {
           }),
           ...(icons().length ? [icon] : []),
         ],
-        content: richTextDocument(p.value),
+        content: untrack(() => richTextDocument(p.value)),
         editorProps: {
           attributes: {
             ...stylex.attrs(richTextStyles.content, styles.input),

@@ -1,4 +1,33 @@
+import { test as base } from "@playwright/test";
 import type { Bootstrap, Role } from "../src/types";
+
+export { expect } from "@playwright/test";
+
+// Solid's dev build reports misuse such as [STRICT_READ_UNTRACKED] as a console warning
+// and keeps running, so the bug only shows up later as stale UI. Fail the test instead.
+// Error-severity diagnostics already arrive as console errors. Timing advisories such as
+// HOT_SCOPE_TIME and SILENT_HOLD are left out because they depend on machine speed.
+const solidWarnings =
+  /^\[(STRICT_READ_UNTRACKED|UNTRACKED_READ_AFTER_AWAIT|FLUSH_IN_EFFECT_CALLBACK|PENDING_ASYNC_FORBIDDEN_SCOPE|RUN_WITH_DISPOSED_OWNER)\]/;
+
+export const test = base.extend<{ consoleProblems: void }>({
+  consoleProblems: [
+    async ({ page }, use) => {
+      const problems: string[] = [];
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      page.on("console", (message) => {
+        const text = message.text();
+        // Chrome logs every 4xx/5xx response; tests mock those on purpose.
+        if (text.startsWith("Failed to load resource:")) return;
+        if (message.type() === "error" || solidWarnings.test(text))
+          problems.push(`console.${message.type()}: ${text}`);
+      });
+      await use();
+      base.expect(problems, "console errors and Solid dev diagnostics").toEqual([]);
+    },
+    { auto: true },
+  ],
+});
 
 // Browser tests intercept the API. No server credentials or database are used.
 export function bootstrap(role: Role = "admin"): Bootstrap {

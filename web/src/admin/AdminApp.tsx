@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show, untrack } from "solid-js";
 import * as stylex from "@stylexjs/stylex";
 import { createRequest } from "../lib/resource";
 import { api, ApiError } from "../lib/api";
@@ -558,7 +558,7 @@ function PageHome(p: {
   const [segment, setSegment] = createSignal("");
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
-  const [expanded, setExpanded] = createSignal(new Set(pageParentPaths(p.pages)));
+  const [expanded, setExpanded] = createSignal(untrack(() => new Set(pageParentPaths(p.pages))));
   const tree = () => buildPageTree(p.pages);
   const openCreate = (path = p.paths[0] || "/") => {
     setParent(path);
