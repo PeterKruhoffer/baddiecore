@@ -31,6 +31,12 @@ lint() {
     { fail "append each migration to MIGRATIONS in src/lib.rs on its own line, after its own // N: comment line, numbered in order"; status=1; }
   grep -rnE --exclude=admin-fixture.ts 'import \{[^}]*\btest\b[^}]*\} from "@playwright/test"' web/tests &&
     { fail "import test and expect from ./admin-fixture, which fails a test on console errors and Solid dev warnings"; status=1; }
+  local route contract
+  contract=$(sed 's/{[^}]*}/{}/g' CONTRACT.md)
+  for route in $(cat src/*.rs | tr '\n' ' ' | grep -oE '\.route\( *"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | sed 's/{[^}]*}/{}/g' | sort -u); do
+    grep -qF -e "$route\`" -e "$route " -e "$route?" <<<"$contract" ||
+      { fail "CONTRACT.md has no entry for route $route; document each route's method, roles, body and status codes there"; status=1; }
+  done
   return "$status"
 }
 
