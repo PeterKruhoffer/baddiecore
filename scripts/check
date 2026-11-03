@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Runs every check. CI runs the same command.
+#   scripts/check              all steps
+#   scripts/check lint clippy  only the named steps
+# TEST_DATABASE_URL points rust-test at a disposable MySQL server. CHECK_MYSQL=docker
+# starts a throwaway mysql:8.4 container instead and removes it on exit.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+fail() { echo "check: $*" >&2; return 1; }
+
+# Each lint names a mistake that reached this repository and the fix for it.
+lint() {
+  local status=0
+  grep -rnEi '\b(INSERT|REPLACE)\s+(IGNORE\s+)?INTO\s+\w+\s+VALUES\b' src tests &&
+    { fail "list the columns in each INSERT, as in INSERT INTO pages(id,slug,data) VALUES(?,?,?); a positional INSERT breaks when a migration adds a column"; status=1; }
+  grep -rnE '\b_\w*\s*:\s*&?[A-Za-z0-9_:]*Error\b' src &&
+    { fail "name the error parameter and log or return it, as db_error in src/lib.rs does; a _ parameter discards the cause"; status=1; }
+  awk '
+    /^const MIGRATIONS/ { inside = 1; next }
+    inside && /^\];/ { exit }
+    inside && /^ *"/ && /", *\/\// { print FILENAME ":" FNR ": comment shares a line with a migration"; bad = 1 }
+    inside && match($0, /^ *\/\/ [0-9]+(-[0-9]+)?:/) {
+      split(substr($0, RSTART, RLENGTH), n, /[^0-9]+/)
+      first = n[2]; last = n[3] == "" ? first : n[3]
+      if (first != count + 1) { print FILENAME ":" FNR ": marker says " first ", but this is migration " count + 1; bad = 1 }
+    }
+    inside && /^ *"/ && ++count > last { print FILENAME ":" FNR ": migration " count " has no // " count ": marker"; bad = 1 }
+    END { exit bad }
+  ' src/lib.rs ||
+    { fail "append each migration to MIGRATIONS in src/lib.rs on its own line, after its own // N: comment line, numbered in order"; status=1; }
+  return "$status"
+}
+
+start_mysql() {
+  local password container port
+  password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+  container=$(docker run -d --rm -e MYSQL_ROOT_PASSWORD="$password" -p 127.0.0.1::3306 mysql:8.4) || return
+  trap "docker rm -f $container >/dev/null" EXIT
+  port=$(docker port "$container" 3306/tcp | head -1 | sed 's/.*://')
+  echo "waiting for throwaway mysql:8.4 on 127.0.0.1:$port"
+  for _ in $(seq 120); do
+    if docker exec -e MYSQL_PWD="$password" "$container" \
+        mysql --protocol=TCP -h 127.0.0.1 -u root -e 'SELECT 1' >/dev/null 2>&1; then
+      export TEST_DATABASE_URL="mysql://root:$password@127.0.0.1:$port"
+      return
+    fi
+    sleep 1
+  done
+  fail "mysql:8.4 did not start; see docker logs $container"
+}
+
+fmt() { cargo fmt --version >/dev/null 2>&1 || fail "rustfmt missing; run rustup component add rustfmt" && cargo fmt --check; }
+clippy() { cargo clippy --version >/dev/null 2>&1 || fail "clippy missing; run rustup component add clippy" && cargo clippy --all-targets --locked -- -D warnings; }
+rust-test() {
+  if [ -z "${TEST_DATABASE_URL:-}" ]; then
+    fail "TEST_DATABASE_URL is unset. Point it at a disposable MySQL 8.4 server (mysql://root:<password>@127.0.0.1:<port>, no database name), or rerun with CHECK_MYSQL=docker to start a throwaway container"
+    return
+  fi
+  cargo test --locked
+}
+node-test() { node --experimental-strip-types --test tests/*.test.mjs; }
+web-install() { pnpm --dir web install --frozen-lockfile; }
+web-check() { pnpm --dir web run check; }
+web-typecheck() { pnpm --dir web run typecheck; }
+web-build() { pnpm --dir web run build; }
+ui-test() {
+  # Orbs ship agent-browser's Chrome but not Playwright's.
+  local chrome
+  for chrome in "$HOME"/.agent-browser/browsers/chrome-*/chrome; do
+    [ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH:-}" ] && [ -x "$chrome" ] &&
+      export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$chrome"
+  done
+  pnpm --dir web run test:ui
+}
+
+steps=("$@")
+[ ${#steps[@]} -gt 0 ] || steps=(lint fmt clippy rust-test node-test web-install web-check web-typecheck web-build ui-test)
+[ "${CHECK_MYSQL:-}" = docker ] && { start_mysql || exit 1; }
+
+summary=() failed=0
+for step in "${steps[@]}"; do
+  echo "== $step"
+  start=$SECONDS
+  if "$step"; then result=ok; else result=FAIL; failed=1; fi
+  summary+=("$(printf '%-14s %-4s %4ss' "$step" "$result" $((SECONDS - start)))")
+done
+printf '%s\n' "${summary[@]}"
+exit "$failed"

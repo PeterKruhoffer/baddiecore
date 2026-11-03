@@ -21,28 +21,19 @@ See [server configuration](deployment.md#server-configuration) for environment v
 
 ## Checks and tests
 
-```sh
-# TEST_DATABASE_URL must point to a disposable MySQL server, with credentials
-# allowed to create/drop databases, and no database name or query string.
-# Example shape: mysql://root:<password>@127.0.0.1:3306
-cargo test --locked
-cargo clippy --all-targets -- -D warnings
-node --experimental-strip-types --test tests/*.test.mjs
-pnpm --dir web run check
-pnpm --dir web run typecheck
-pnpm --dir web run build
-```
-
-The browser tests use mock API responses and need no database. Install Chromium once, then run:
+Run every check with one command. CI runs the same command.
 
 ```sh
-pnpm --dir web exec playwright install chromium
-pnpm --dir web run test:ui
+scripts/check                     # all steps, with a pass/fail and time per step
+scripts/check lint clippy         # only the named steps
+CHECK_MYSQL=docker scripts/check  # start a throwaway mysql:8.4 for the API tests
 ```
 
-Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium executable instead. The tests start the frontend dev server automatically and cover editing, publishing, reviews, template creation, permissions, and narrow-screen navigation. They do not replace the MySQL API tests.
+The API tests need `TEST_DATABASE_URL` pointing to a disposable MySQL 8.4 server, with credentials allowed to create and drop databases, and no database name or query string, for example `mysql://root:<password>@127.0.0.1:3306`. Each test creates a uniquely named `baddie_test_*` database and drops it afterward. Do not point tests at production.
 
-Each API test creates a uniquely named `baddie_test_*` database and drops it afterward. Tests fail rather than silently skip when `TEST_DATABASE_URL` is missing. Do not point tests at production.
+The browser tests use mock API responses and need no database. They need Chromium, from `pnpm --dir web exec playwright install chromium` or from `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. In an orb the script uses agent-browser's Chrome.
+
+The `lint` step catches mistakes that reached this repository before. Each error names its fix.
 
 ## Frontend styles
 

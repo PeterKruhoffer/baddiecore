@@ -13,3 +13,5 @@ Strong combosale primitives, that allow you and the users to extend the project 
 
 
 When running locally use orbstack
+
+Run `scripts/check` and see it pass before you say a change is done.

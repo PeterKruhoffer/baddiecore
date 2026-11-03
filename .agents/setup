@@ -5,6 +5,7 @@ if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 fi
 source "$HOME/.cargo/env"
+rustup component add clippy rustfmt
 cargo fetch --locked
 if ! command -v pnpm >/dev/null 2>&1; then
   npm install --global pnpm@12.6.0
