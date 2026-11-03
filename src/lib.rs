@@ -12,16 +12,18 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use mysql::{Opts, Pool, PooledConn, Transaction, TxOpts, prelude::Queryable};
+use mysql::{Pool, TxOpts, prelude::Queryable};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 use tower_http::{
     limit::RequestBodyLimitLayer,
     services::{ServeDir, ServeFile},
 };
 use uuid::Uuid;
 
+use db::{Database, Locked, TransactionMode};
+
 pub mod auth;
+mod db;
 pub mod headless;
 pub mod media;
 mod package;
@@ -126,12 +128,8 @@ pub struct Content {
 
 #[derive(Clone)]
 pub struct AppState {
-    db: Pool,
+    db: Database,
     auth: Arc<dyn auth::AuthProvider>,
-    /// Admin and CLI-style jobs that wait on the `cms_lock` row.
-    locked_slots: Arc<Semaphore>,
-    /// Lock-free reads: public content, alias lookups and health checks.
-    read_slots: Arc<Semaphore>,
     origin: auth::OriginPolicy,
     headless: headless::ApiKeys,
 }
@@ -164,54 +162,34 @@ impl AppState {
         admin_password: Option<String>,
         secure_cookie: bool,
     ) -> std::result::Result<Self, String> {
-        let db = connect(database_url, 2 * DATABASE_JOBS)?;
+        let pool = db::connect(database_url, db::CONNECTIONS)?;
+        prepare(&pool)?;
+        db::transaction(&pool, TransactionMode::Commit, |tx| {
+            workflow::bootstrap_admin(tx, admin_password.as_deref())
+        })
+        .map_err(|e| e.1)?;
+        let db = Database::new(pool);
         let auth = auth::Auth::new(db.clone(), secure_cookie)?;
-        let state = Self::with_pool(db, Arc::new(auth))?;
-        state
-            .transaction(|tx| workflow::bootstrap_admin(tx, admin_password.as_deref()))
-            .map_err(|e| e.1)?;
-        Ok(state)
+        Self::new(db, Arc::new(auth))
     }
 
     pub fn open_with_auth(
         database_url: &str,
         auth: Arc<dyn auth::AuthProvider>,
     ) -> std::result::Result<Self, String> {
-        Self::with_pool(connect(database_url, 2 * DATABASE_JOBS)?, auth)
+        let pool = db::connect(database_url, db::CONNECTIONS)?;
+        prepare(&pool)?;
+        Self::new(Database::new(pool), auth)
     }
 
-    fn with_pool(db: Pool, auth: Arc<dyn auth::AuthProvider>) -> std::result::Result<Self, String> {
-        let origin = auth.origin_policy()?;
-        prepare(&db)?;
-        // Bound running and queued blocking jobs independently of Tokio's thread pool.
-        // Locked jobs get their own limit, so waiting on the lock cannot starve reads.
+    fn new(db: Database, auth: Arc<dyn auth::AuthProvider>) -> std::result::Result<Self, String> {
         Ok(Self {
             db,
+            origin: auth.origin_policy()?,
             auth,
-            locked_slots: Arc::new(Semaphore::new(DATABASE_JOBS)),
-            read_slots: Arc::new(Semaphore::new(DATABASE_JOBS)),
-            origin,
             headless: headless::ApiKeys::default(),
         })
     }
-}
-
-/// Limit on locked jobs, and separately on lock-free reads, per AppState.
-const DATABASE_JOBS: usize = 16;
-
-/// Fails when the URL's pool_max cannot give `min_connections` jobs a connection each.
-fn connect(database_url: &str, min_connections: usize) -> std::result::Result<Pool, String> {
-    let opts = Opts::from_url(database_url).map_err(|_| "DATABASE_URL must be a MySQL URL")?;
-    let max = opts.get_pool_opts().constraints().max();
-    if max < min_connections {
-        return Err(format!(
-            "DATABASE_URL pool_max is {max}; it must be at least {min_connections} so every database job can get a connection"
-        ));
-    }
-    Pool::new(opts).map_err(|e| {
-        db_error(e);
-        "could not connect to MySQL".into()
-    })
 }
 
 /// Schema changes, applied in order at startup. Version N is entry N-1.
@@ -242,7 +220,7 @@ const MIGRATIONS: &[&str] = &[
 /// Applies pending migrations, then creates the organization record and seed content when missing.
 fn prepare(db: &Pool) -> std::result::Result<(), String> {
     migrate(db).map_err(|_| "could not migrate MySQL schema")?;
-    database_transaction(db, TransactionMode::Commit, |tx| {
+    db::transaction(db, TransactionMode::Commit, |tx| {
         // One-time backfill for databases created before page_paths existed.
         if tx
             .query_first::<i64, _>("SELECT 1 FROM page_paths LIMIT 1")
@@ -296,17 +274,17 @@ pub fn reset_admin(
     id: &str,
     password: &str,
 ) -> std::result::Result<(), String> {
-    let db = connect(database_url, 1)?;
+    let db = db::connect(database_url, 1)?;
     prepare(&db)?;
     let hash = auth::hash_password_now(password).map_err(|e| e.1)?;
-    database_transaction(&db, TransactionMode::Commit, |tx| {
+    db::transaction(&db, TransactionMode::Commit, |tx| {
         workflow::reset_admin(tx, id, &hash)
     })
     .map_err(|e| e.1)
 }
 
 fn seed(db: &Pool) -> Result<()> {
-    database_transaction(db, TransactionMode::Commit, |tx| {
+    db::transaction(db, TransactionMode::Commit, |tx| {
         let count: i64 = tx
             .query_first("SELECT count(*) FROM components")
             .map_err(db_error)?
@@ -441,87 +419,6 @@ fn seed(db: &Pool) -> Result<()> {
     })
 }
 
-impl AppState {
-    fn transaction<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> Result<T>) -> Result<T> {
-        database_transaction(&self.db, TransactionMode::Commit, f)
-    }
-
-    async fn run<T, F>(&self, f: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
-    {
-        self.blocking(&self.locked_slots, move |db| {
-            database_transaction(db, TransactionMode::Commit, f)
-        })
-        .await
-    }
-
-    async fn read<T, F>(&self, f: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut PooledConn) -> Result<T> + Send + 'static,
-    {
-        self.blocking(&self.read_slots, move |db| {
-            f(&mut db.get_conn().map_err(db_error)?)
-        })
-        .await
-    }
-
-    async fn blocking<T, F>(&self, slots: &Arc<Semaphore>, f: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&Pool) -> Result<T> + Send + 'static,
-    {
-        let permit = slots.clone().try_acquire_owned().map_err(|_| {
-            ApiError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database is busy; retry later".into(),
-            )
-        })?;
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || {
-            // Keep the permit until the job ends, even if its HTTP request is cancelled.
-            let _permit = permit;
-            f(&db)
-        })
-        .await
-        .map_err(|_| {
-            ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "database task failed".into(),
-            )
-        })?
-    }
-}
-
-#[derive(Clone, Copy)]
-enum TransactionMode {
-    Commit,
-    Rollback,
-}
-
-fn database_transaction<T>(
-    db: &Pool,
-    mode: TransactionMode,
-    f: impl FnOnce(&mut Transaction<'_>) -> Result<T>,
-) -> Result<T> {
-    let mut conn = db.get_conn().map_err(db_error)?;
-    let mut tx = conn
-        .start_transaction(TxOpts::default())
-        .map_err(db_error)?;
-    // All server and CLI writes share the same lock. Errors roll back the batch.
-    tx.query_drop("SELECT id FROM cms_lock WHERE id=1 FOR UPDATE")
-        .map_err(db_error)?;
-    let result = f(&mut tx)?;
-    match mode {
-        TransactionMode::Commit => tx.commit(),
-        TransactionMode::Rollback => tx.rollback(),
-    }
-    .map_err(db_error)?;
-    Ok(result)
-}
-
 pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
     let admin = Router::new()
         .route("/bootstrap", get(bootstrap))
@@ -577,6 +474,7 @@ async fn redirect_alias(State(state): State<AppState>, request: Request, next: N
     let path = request.uri().path().to_owned();
     if matches!(*request.method(), Method::GET | Method::HEAD) && validate_slug(&path).is_ok() {
         let target = state
+            .db
             .read(move |db| {
                 db.exec_first::<String, _, _>(
                     "SELECT s.slug FROM route_aliases a JOIN snapshots s ON s.page_id=a.page_id WHERE a.slug=?",
@@ -603,6 +501,7 @@ async fn redirect_alias(State(state): State<AppState>, request: Request, next: N
 
 async fn health(State(state): State<AppState>) -> Result<StatusCode> {
     state
+        .db
         .read(|db| {
             db.query_drop("SELECT 1").map_err(db_error)?;
             Ok(StatusCode::OK)
@@ -858,7 +757,7 @@ fn check_published_paths(db: &mut impl Queryable, page: &Page) -> Result<()> {
 }
 // Callers build and validate the snapshot within this same locked transaction.
 // Returns the current draft, which a scheduled snapshot may predate.
-fn publish(db: &mut impl Queryable, mut snapshot: Content) -> Result<Page> {
+fn publish(db: &mut Locked<'_>, mut snapshot: Content) -> Result<Page> {
     snapshot.page.published_revision = Some(snapshot.page.revision);
     let page = &snapshot.page;
     check_published_paths(db, page)?;
@@ -985,7 +884,7 @@ async fn delete_template(
 }
 
 /// Delete an unused template or component. Published snapshots keep their own copies.
-fn delete_definition(db: &mut Transaction<'_>, table: &str, id: &str) -> Result<()> {
+fn delete_definition(db: &mut Locked<'_>, table: &str, id: &str) -> Result<()> {
     let pages: Vec<Page> = load_all(db, "pages")?;
     let mut users = Vec::new();
     if table == "templates" {
@@ -1109,6 +1008,7 @@ async fn content(
 ) -> Result<Json<Content>> {
     validate_slug(&query.slug)?;
     state
+        .db
         .read(move |db| {
             let raw: Option<String> = db
                 .exec_first("SELECT data FROM snapshots WHERE slug=?", (query.slug,))
@@ -1335,7 +1235,7 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
 }
 /// Records the draft slugs and aliases of `pages`, which the caller is writing, in
 /// page_paths, after checking them against every other page's draft and published paths.
-fn claim_paths(db: &mut impl Queryable, pages: &[Page]) -> Result<()> {
+fn claim_paths(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
     for page in pages {
         db.exec_drop("DELETE FROM page_paths WHERE page_id=?", (&page.id,))
             .map_err(db_error)?;
@@ -1458,7 +1358,7 @@ fn load_one<T: serde::de::DeserializeOwned>(
         .map_err(db_error)?;
     parse(&raw.ok_or_else(ApiError::not_found)?)
 }
-fn insert_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
+fn insert_page(db: &mut Locked<'_>, page: &Page) -> Result<()> {
     db.exec_drop(
         "INSERT INTO pages(id,slug,data) VALUES(?,?,?)",
         (&page.id, &page.slug, json(page)?),
@@ -1512,72 +1412,4 @@ fn title_case(value: &str) -> String {
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
         .replace('_', " ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn cancelled_requests_keep_their_database_slot_until_work_finishes() {
-        // An empty pool is sufficient: this test never connects to a database.
-        let pool =
-            Pool::new(Opts::from_url("mysql://127.0.0.1/test?pool_min=0&pool_max=1").unwrap())
-                .unwrap();
-        let state = AppState {
-            db: pool.clone(),
-            auth: Arc::new(auth::Auth::new(pool.clone(), false).unwrap()),
-            locked_slots: Arc::new(Semaphore::new(1)),
-            read_slots: Arc::new(Semaphore::new(1)),
-            origin: auth::OriginPolicy::from_env(false).unwrap(),
-            headless: headless::ApiKeys::default(),
-        };
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let (finish, wait) = std::sync::mpsc::channel();
-        let running = {
-            let state = state.clone();
-            tokio::spawn(async move {
-                state
-                    .blocking(&state.locked_slots, move |_| {
-                        started.send(()).unwrap();
-                        wait.recv_timeout(Duration::from_secs(5)).unwrap();
-                        Ok(())
-                    })
-                    .await
-            })
-        };
-        ready.await.unwrap();
-        assert_eq!(
-            state
-                .blocking(&state.locked_slots, |_| Ok(()))
-                .await
-                .unwrap_err()
-                .0,
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-        running.abort();
-        assert!(running.await.unwrap_err().is_cancelled());
-        assert_eq!(
-            state
-                .blocking(&state.locked_slots, |_| Ok(()))
-                .await
-                .unwrap_err()
-                .0,
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-        finish.send(()).unwrap();
-        let permit = tokio::time::timeout(Duration::from_secs(2), state.locked_slots.acquire())
-            .await
-            .unwrap()
-            .unwrap();
-        drop(permit);
-        assert_eq!(
-            state
-                .blocking(&state.locked_slots, |_| Ok(42))
-                .await
-                .unwrap(),
-            42
-        );
-    }
 }

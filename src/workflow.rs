@@ -91,13 +91,14 @@ impl AppState {
     pub(super) async fn run_as<T, F>(&self, editor: auth::Editor, f: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(&mut Transaction<'_>, Access) -> Result<T> + Send + 'static,
+        F: FnOnce(&mut Locked<'_>, Access) -> Result<T> + Send + 'static,
     {
-        self.run(move |db| {
-            let access = access(db, editor)?;
-            f(db, access)
-        })
-        .await
+        self.db
+            .run(move |db| {
+                let access = access(db, editor)?;
+                f(db, access)
+            })
+            .await
     }
 }
 
@@ -107,7 +108,7 @@ pub(crate) fn access(db: &mut impl Queryable, editor: auth::Editor) -> Result<Ac
     resolve(organization(db)?, editor.id)
 }
 
-pub(super) fn initialize(db: &mut impl Queryable) -> Result<()> {
+pub(super) fn initialize(db: &mut Locked<'_>) -> Result<()> {
     db.exec_drop(
         "INSERT IGNORE INTO organization(id,data) VALUES('installation',?)",
         (json(&Organization::default())?,),
@@ -118,7 +119,7 @@ pub(super) fn initialize(db: &mut impl Queryable) -> Result<()> {
 
 /// Creates the `admin` account only when no administrator has a password, so
 /// a configured password never overrides administrators' later changes.
-pub(super) fn bootstrap_admin(db: &mut impl Queryable, password: Option<&str>) -> Result<()> {
+pub(super) fn bootstrap_admin(db: &mut Locked<'_>, password: Option<&str>) -> Result<()> {
     for member in organization(db)?.members {
         if member.role == Role::Admin && auth::has_account(db, &member.id)? {
             return Ok(());
@@ -133,7 +134,7 @@ pub(super) fn bootstrap_admin(db: &mut impl Queryable, password: Option<&str>) -
 }
 
 /// Makes `id` an administrator, adding the member if needed, and sets its password.
-pub(super) fn reset_admin(db: &mut impl Queryable, id: &str, hash: &str) -> Result<()> {
+pub(super) fn reset_admin(db: &mut Locked<'_>, id: &str, hash: &str) -> Result<()> {
     let mut org = organization(db)?;
     match org.members.iter_mut().find(|m| m.id == id) {
         Some(member) => member.role = Role::Admin,

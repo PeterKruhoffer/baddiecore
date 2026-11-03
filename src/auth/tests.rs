@@ -10,7 +10,7 @@ use tower::ServiceExt;
 fn offline_auth() -> Auth {
     let pool =
         Pool::new(Opts::from_url("mysql://127.0.0.1/test?pool_min=0&pool_max=1").unwrap()).unwrap();
-    Auth::new(pool, false).unwrap()
+    Auth::new(crate::db::Database::new(pool), false).unwrap()
 }
 
 #[test]

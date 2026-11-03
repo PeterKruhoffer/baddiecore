@@ -251,6 +251,7 @@ pub(super) async fn serve(
 ) -> Result<Response> {
     let id = MediaId::parse(&id).ok_or_else(ApiError::not_found)?;
     let (data, bytes) = state
+        .db
         .read(move |db| {
             db.exec_first::<(String, Vec<u8>), _, _>(
                 "SELECT data, bytes FROM media WHERE id=?",

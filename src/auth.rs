@@ -22,7 +22,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
-use mysql::{Pool, PooledConn, prelude::Queryable};
+use mysql::prelude::Queryable;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -30,7 +30,11 @@ use tokio::sync::Semaphore;
 use url::Url;
 use uuid::Uuid;
 
-use crate::{ApiError, Result, db_error};
+use crate::{
+    ApiError, Result,
+    db::{Database, Locked},
+    db_error,
+};
 
 /// Authenticated identity. Local organization membership grants CMS access.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,35 +74,20 @@ static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_now("unknown account
 /// Account IDs are organization member IDs.
 #[derive(Clone)]
 pub struct Auth {
-    db: Pool,
+    db: Database,
     secure_cookie: bool,
     origin: OriginPolicy,
     failures: Arc<Mutex<HashMap<String, (Instant, u32)>>>,
 }
 
 impl Auth {
-    pub fn new(db: Pool, secure_cookie: bool) -> std::result::Result<Self, String> {
+    pub(crate) fn new(db: Database, secure_cookie: bool) -> std::result::Result<Self, String> {
         Ok(Self {
             db,
             secure_cookie,
             origin: OriginPolicy::from_env(secure_cookie)?,
             failures: Default::default(),
         })
-    }
-
-    async fn blocking<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut PooledConn) -> Result<T> + Send + 'static,
-    ) -> Result<T> {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || f(&mut db.get_conn().map_err(db_error)?))
-            .await
-            .map_err(|_| {
-                ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "database task failed".into(),
-                )
-            })?
     }
 
     /// Checks a password, counting attempts per account to slow guessing.
@@ -117,7 +106,8 @@ impl Auth {
         }
         let account = id.to_owned();
         let hash: Option<String> = self
-            .blocking(move |db| {
+            .db
+            .sessions(move |db| {
                 db.exec_first("SELECT password_hash FROM accounts WHERE id=?", (account,))
                     .map_err(db_error)
             })
@@ -164,21 +154,22 @@ impl Auth {
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let old = cookie_value(headers, "baddie_session").map(|old| digest(&old));
         let hashed = digest(&token);
-        self.blocking(move |db| {
-            let now = unix_now();
-            db.exec_drop("DELETE FROM sessions WHERE expires_at<=?", (now,))
-                .map_err(db_error)?;
-            if let Some(old) = old {
-                db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (old,))
+        self.db
+            .sessions(move |db| {
+                let now = unix_now();
+                db.exec_drop("DELETE FROM sessions WHERE expires_at<=?", (now,))
                     .map_err(db_error)?;
-            }
-            db.exec_drop(
-                "INSERT INTO sessions(token_hash,account_id,expires_at) VALUES(?,?,?)",
-                (hashed, id, now + SESSION_LIFETIME.as_secs() as i64),
-            )
-            .map_err(db_error)
-        })
-        .await?;
+                if let Some(old) = old {
+                    db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (old,))
+                        .map_err(db_error)?;
+                }
+                db.exec_drop(
+                    "INSERT INTO sessions(token_hash,account_id,expires_at) VALUES(?,?,?)",
+                    (hashed, id, now + SESSION_LIFETIME.as_secs() as i64),
+                )
+                .map_err(db_error)
+            })
+            .await?;
         set_cookie(response, self.cookie(token));
         Ok(())
     }
@@ -221,7 +212,8 @@ impl AuthProvider for Auth {
             let token = cookie_value(headers, "baddie_session").ok_or(StatusCode::UNAUTHORIZED)?;
             let hashed = digest(&token);
             let id: Option<String> = self
-                .blocking(move |db| {
+                .db
+                .sessions(move |db| {
                     db.exec_first(
                         "SELECT account_id FROM sessions WHERE token_hash=? AND expires_at>?",
                         (hashed, unix_now()),
@@ -285,7 +277,8 @@ async fn change_password(
             _ => e,
         })?;
     let id = editor.id.clone();
-    auth.blocking(move |db| store_password(db, &id, &hash))
+    auth.db
+        .run(move |db| store_password(db, &id, &hash))
         .await?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     auth.issue(editor.id, &headers, &mut response).await?;
@@ -296,11 +289,12 @@ async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Result<Response
     auth.origin.check(&headers)?;
     if let Some(token) = cookie_value(&headers, "baddie_session") {
         let hashed = digest(&token);
-        auth.blocking(move |db| {
-            db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (hashed,))
-                .map_err(db_error)
-        })
-        .await?;
+        auth.db
+            .sessions(move |db| {
+                db.exec_drop("DELETE FROM sessions WHERE token_hash=?", (hashed,))
+                    .map_err(db_error)
+            })
+            .await?;
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     let mut cookie = auth.cookie(String::new());
@@ -354,7 +348,7 @@ async fn verify(hash: String, password: String) -> Result<bool> {
 }
 
 /// Sets an account's password hash and ends all of its sessions.
-pub(crate) fn store_password(db: &mut impl Queryable, id: &str, hash: &str) -> Result<()> {
+pub(crate) fn store_password(db: &mut Locked<'_>, id: &str, hash: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > 255 {
         return Err(ApiError::bad("usernames need 1 to 255 bytes"));
     }
@@ -368,7 +362,7 @@ pub(crate) fn store_password(db: &mut impl Queryable, id: &str, hash: &str) -> R
 }
 
 /// Deletes an account's password and sessions.
-pub(crate) fn remove_account(db: &mut impl Queryable, id: &str) -> Result<()> {
+pub(crate) fn remove_account(db: &mut Locked<'_>, id: &str) -> Result<()> {
     db.exec_drop("DELETE FROM accounts WHERE id=?", (id,))
         .map_err(db_error)
 }

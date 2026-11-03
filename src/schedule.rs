@@ -39,7 +39,7 @@ pub(crate) fn validate_time(publish_at: i64) -> Result<()> {
 /// Replaces the page's pending schedule. Callers build and validate the snapshot
 /// within this same locked transaction.
 pub(crate) fn store(
-    db: &mut impl Queryable,
+    db: &mut Locked<'_>,
     snapshot: &Content,
     publish_at: i64,
     scheduled_by: &str,
@@ -126,7 +126,7 @@ pub(super) async fn cancel(
 }
 
 /// Publishes the page's scheduled snapshot if it is still due and has not failed.
-fn publish_if_due(db: &mut impl Queryable, page_id: &str, now: i64) -> Result<bool> {
+fn publish_if_due(db: &mut Locked<'_>, page_id: &str, now: i64) -> Result<bool> {
     let data: Option<String> = db
         .exec_first(
             "SELECT data FROM scheduled_publications WHERE page_id=? AND publish_at<=? AND error IS NULL",
@@ -147,7 +147,8 @@ impl AppState {
     pub async fn publish_due(&self) -> std::result::Result<usize, String> {
         let now = now();
         let due: Vec<String> = self
-            .read(move |db| {
+            .db
+            .unlocked(move |db| {
                 db.exec(
                     "SELECT page_id FROM scheduled_publications WHERE publish_at<=? AND error IS NULL ORDER BY publish_at",
                     (now,),
@@ -159,10 +160,14 @@ impl AppState {
         let mut published = 0;
         for id in due {
             let page_id = id.clone();
-            match self.run(move |db| publish_if_due(db, &page_id, now)).await {
+            match self
+                .db
+                .run(move |db| publish_if_due(db, &page_id, now))
+                .await
+            {
                 Ok(done) => published += usize::from(done),
                 Err(ApiError(status, message)) if status.is_client_error() => {
-                    self.run(move |db| {
+                    self.db.run(move |db| {
                         db.exec_drop(
                             "UPDATE scheduled_publications SET error=? WHERE page_id=? AND publish_at<=? AND error IS NULL",
                             (message, id, now),

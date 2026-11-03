@@ -15,14 +15,15 @@ use std::{
     path::Path,
 };
 
-use mysql::{Pool, Transaction, prelude::Queryable};
+use mysql::{Pool, prelude::Queryable};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::{
-    ApiError, Block, Component, Definitions, Page, StoredData, Template, TransactionMode,
-    database_transaction, insert_page, json, load_data, validate_component, validate_template,
+    ApiError, Block, Component, Definitions, Page, StoredData, Template,
+    db::{Locked, TransactionMode, transaction},
+    insert_page, json, load_data, validate_component, validate_template,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -304,7 +305,7 @@ fn after(hashes: &Hashes, applied: &[Change], source: &Hashes) -> Hashes {
     result
 }
 
-fn load_base(tx: &mut Transaction<'_>) -> crate::Result<Hashes> {
+fn load_base(tx: &mut Locked<'_>) -> crate::Result<Hashes> {
     let rows: Vec<(String, String)> = tx
         .query("SELECT path,hash FROM sync_base")
         .map_err(crate::db_error)?;
@@ -318,12 +319,7 @@ fn load_base(tx: &mut Transaction<'_>) -> crate::Result<Hashes> {
 }
 
 /// Record every path where both sides now agree. Paths that still differ keep their base.
-fn save_base(
-    tx: &mut Transaction<'_>,
-    db: &Hashes,
-    files: &Hashes,
-    base: &Hashes,
-) -> crate::Result<()> {
+fn save_base(tx: &mut Locked<'_>, db: &Hashes, files: &Hashes, base: &Hashes) -> crate::Result<()> {
     let paths: BTreeSet<&String> = db.keys().chain(files.keys()).chain(base.keys()).collect();
     for path in paths {
         let hash = db.get(path);
@@ -345,7 +341,7 @@ fn save_base(
 /// Treat freshly seeded items as already synced, so a repository that deleted or changed
 /// them updates a new installation instead of having its starter items exported back.
 pub(crate) fn record_base(
-    tx: &mut Transaction<'_>,
+    tx: &mut Locked<'_>,
     components: &[Component],
     templates: &[Template],
 ) -> crate::Result<()> {
@@ -482,7 +478,7 @@ fn write_files(directory: &Path, writes: &[(&str, &[u8])], removals: &[&str]) ->
 pub fn status(db: &Pool, directory: &Path) -> Result<Vec<Change>, Error> {
     let known = has_manifest(directory)?;
     let files = file_hashes(&read_files(directory, &GROUPS, false)?);
-    database_transaction(db, TransactionMode::Rollback, |tx| {
+    transaction(db, TransactionMode::Rollback, |tx| {
         let db_hashes = database_hashes(&database_items(&load_data(tx, false)?)?);
         let base = if known { load_base(tx)? } else { Hashes::new() };
         Ok(compare(&db_hashes, &files, &base))
@@ -514,7 +510,7 @@ pub fn pull(db: &Pool, directory: &Path, force: bool) -> Result<Sync, Error> {
     ensure_directory(directory)?;
     let known = has_manifest(directory)?;
     let files = file_hashes(&read_files(directory, &GROUPS, false)?);
-    database_transaction(db, TransactionMode::Commit, |tx| {
+    transaction(db, TransactionMode::Commit, |tx| {
         // A directory without a manifest shares no history with this database.
         if !known {
             tx.query_drop("DELETE FROM sync_base")
@@ -575,7 +571,7 @@ pub fn push(db: &Pool, directory: &Path, force: bool, dry_run: bool) -> Result<S
     } else {
         TransactionMode::Commit
     };
-    database_transaction(db, mode, |tx| {
+    transaction(db, mode, |tx| {
         let items = database_items(&load_data(tx, false)?)?;
         let db_hashes = database_hashes(&items);
         let base = load_base(tx)?;
@@ -718,7 +714,7 @@ pub(crate) struct Merged {
 }
 
 pub(crate) fn merge_items(
-    tx: &mut Transaction<'_>,
+    tx: &mut Locked<'_>,
     items: Items,
     definitions: DefinitionPolicy,
 ) -> crate::Result<Merged> {
@@ -726,14 +722,14 @@ pub(crate) fn merge_items(
     merge(tx, items, definitions)
 }
 
-fn exists(tx: &mut Transaction<'_>, table: &str, id: &str) -> crate::Result<bool> {
+fn exists(tx: &mut Locked<'_>, table: &str, id: &str) -> crate::Result<bool> {
     tx.exec_first::<String, _, _>(format!("SELECT id FROM {table} WHERE id=?"), (id,))
         .map(|row| row.is_some())
         .map_err(crate::db_error)
 }
 
 fn merge(
-    tx: &mut Transaction<'_>,
+    tx: &mut Locked<'_>,
     items: Items,
     definitions: DefinitionPolicy,
 ) -> crate::Result<Merged> {

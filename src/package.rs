@@ -79,7 +79,8 @@ pub(crate) async fn export(
         .await?;
     // Encode and compress outside the lock so other editors do not wait on it.
     let bytes = state
-        .blocking(&state.locked_slots, move |_| {
+        .db
+        .unlocked(move |_| {
             let files = export_files(&data.components, &data.templates, &data.pages)
                 .map_err(|e| ApiError::bad(e.0))?;
             zip_files(&files)
@@ -108,10 +109,10 @@ pub(crate) async fn install(
     // Unpack only after the admin check, so others cannot make the server inflate archives.
     // Unpacking happens outside the lock so other editors do not wait on it.
     let checked = editor.clone();
-    // Editorial work, so it counts against the locked-job limit, not public reads.
+    // Editorial work, so it counts against the editorial limit, not public reads.
     let items = state
-        .blocking(&state.locked_slots, move |db| {
-            let db = &mut db.get_conn().map_err(crate::db_error)?;
+        .db
+        .unlocked(move |db| {
             workflow::access(db, checked)?.admin()?;
             let items = unzip(&body).map_err(|e| ApiError::bad(e.0))?;
             if items.pages() == 0 {

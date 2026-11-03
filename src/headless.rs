@@ -113,6 +113,7 @@ struct PublishedPage {
 
 async fn pages(State(state): State<AppState>) -> Result<Json<Vec<PublishedPage>>> {
     state
+        .db
         .read(|db| {
             let snapshots: Vec<String> = db
                 .query("SELECT data FROM snapshots ORDER BY slug")
@@ -159,6 +160,7 @@ async fn register_component(
     }
     validate_component(&item)?;
     state
+        .db
         .run(move |db| {
             let existing: Option<String> = db
                 .exec_first("SELECT data FROM components WHERE id=?", (&id,))

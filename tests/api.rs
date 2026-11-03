@@ -1129,6 +1129,66 @@ async fn editorial_lock_contention_leaves_public_site_available() {
 }
 
 #[tokio::test]
+async fn stalled_session_writes_leave_public_site_available() {
+    let app = setup().await;
+    let page = bootstrap(&app).await.pages.remove(0);
+    let publish = format!("/api/admin/pages/{}/publish", page.id);
+    let body = json!({"revision":page.revision});
+    assert_eq!(
+        call(&app.app, "POST", &publish, Some(&app.cookie), Some(&body))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let pool = Pool::new(Opts::from_url(&app.db.url).unwrap()).unwrap();
+    let mut conn = pool.get_conn().unwrap();
+    let mut tx = conn.start_transaction(mysql::TxOpts::default()).unwrap();
+    // Stands in for any slow write to sessions: every sign-out now waits on MySQL.
+    tx.query_drop("SELECT token_hash FROM sessions FOR UPDATE")
+        .unwrap();
+    let mut flood = Vec::new();
+    for _ in 0..64 {
+        let (app, cookie) = (app.app.clone(), app.cookie.clone());
+        flood.push(tokio::spawn(async move {
+            call(&app, "POST", "/api/logout", Some(&cookie), None::<&Value>)
+                .await
+                .status()
+        }));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let waiting = "SELECT COUNT(*) FROM information_schema.processlist \
+        WHERE db=? AND info LIKE 'DELETE FROM sessions%'";
+    let mut probe = pool.get_conn().unwrap();
+    while probe
+        .exec_first::<i64, _, _>(waiting, (&app.db.name,))
+        .unwrap()
+        .unwrap()
+        == 0
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sign-outs never queued on the session rows"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // Give the rest of the flood time to reach the database too.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    for path in ["/health", "/api/content?slug=/"] {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            call(&app.app, "GET", path, None, None::<&Value>),
+        )
+        .await
+        .expect("public request waited for a connection held by sign-outs");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+    tx.rollback().unwrap();
+    for request in flood {
+        assert_eq!(request.await.unwrap(), StatusCode::NO_CONTENT);
+    }
+}
+
+#[tokio::test]
 async fn custom_auth_guards_cms_without_affecting_public_content() {
     use baddiecore::auth::{AuthProvider, Authorization, Editor};
     use std::sync::{
