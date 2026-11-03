@@ -30,6 +30,7 @@ mod package;
 pub mod richtext;
 pub mod schedule;
 pub mod serialization;
+mod store;
 pub mod workflow;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -227,8 +228,7 @@ fn prepare(db: &Pool) -> std::result::Result<(), String> {
             .map_err(db_error)?
             .is_none()
         {
-            let pages: Vec<Page> = load_all(tx, "pages")?;
-            claim_paths(tx, &pages)?;
+            store::backfill_paths(tx)?;
         }
         workflow::initialize(tx)
     })
@@ -413,8 +413,7 @@ fn seed(db: &Pool) -> Result<()> {
             revision: 1,
             published_revision: None,
         };
-        insert_page(tx, &page)?;
-        claim_paths(tx, &[page])?;
+        store::save_pages(tx, &[page])?;
         serialization::record_base(tx, &components, &[template])
     })
 }
@@ -597,10 +596,6 @@ async fn create_page(
         .run_as(editor, move |db, access| {
             validate_slug(&input.slug)?;
             access.page(&input.slug)?;
-            require_template(db, &input.template_id)?;
-            if input.title.trim().is_empty() {
-                return Err(ApiError::bad("title is required"));
-            }
             let page = Page {
                 id: Uuid::new_v4().to_string(),
                 title: input.title,
@@ -611,8 +606,7 @@ async fn create_page(
                 revision: 1,
                 published_revision: None,
             };
-            insert_page(db, &page)?;
-            claim_paths(db, std::slice::from_ref(&page))?;
+            store::save_pages(db, std::slice::from_ref(&page))?;
             Ok((StatusCode::CREATED, Json(page)))
         })
         .await
@@ -640,8 +634,8 @@ async fn update_page(
                 return Err(ApiError::conflict("stale revision"));
             }
             page.published_revision = old.published_revision;
-            validate_page(db, &page)?;
             page.revision += 1;
+            let mut changed = Vec::new();
             if page.slug != old.slug {
                 if old.slug == "/" {
                     return Err(ApiError::bad("the root page cannot be moved"));
@@ -650,7 +644,6 @@ async fn update_page(
                     return Err(ApiError::bad("a page cannot move into its own subtree"));
                 }
                 let mut pages: Vec<Page> = load_all(db, "pages")?;
-                let mut changed = Vec::new();
                 for child in &mut pages {
                     if child.id == page.id {
                         *child = page.clone();
@@ -662,7 +655,6 @@ async fn update_page(
                             &child.slug[old.slug.len()..]
                         );
                         child.revision += 1;
-                        validate_slug(&child.slug)?;
                         access.page(&child.slug)?;
                         changed.push(child.clone());
                     }
@@ -671,32 +663,9 @@ async fn update_page(
                 if pages.iter().any(|p| !paths.insert(&p.slug)) {
                     return Err(ApiError::conflict("a destination path already exists"));
                 }
-                changed.push(page.clone());
-                claim_paths(db, &changed)?;
-                // Temporary non-public paths permit moves to an ancestor without
-                // transient unique-key collisions. Snapshots remain untouched.
-                for item in &changed {
-                    db.exec_drop(
-                        "UPDATE pages SET slug=? WHERE id=?",
-                        (format!("__move_{}", item.id), &item.id),
-                    )
-                    .map_err(db_error)?;
-                }
-                for item in &changed {
-                    db.exec_drop(
-                        "UPDATE pages SET slug=?,data=? WHERE id=?",
-                        (&item.slug, json(item)?, &item.id),
-                    )
-                    .map_err(constraint_error)?;
-                }
-                return Ok(Json(page));
             }
-            db.exec_drop(
-                "UPDATE pages SET slug=?,data=? WHERE id=?",
-                (&page.slug, json(&page)?, id),
-            )
-            .map_err(constraint_error)?;
-            claim_paths(db, std::slice::from_ref(&page))?;
+            changed.push(page.clone());
+            store::save_pages(db, &changed)?;
             Ok(Json(page))
         })
         .await
@@ -761,13 +730,7 @@ fn publish(db: &mut Locked<'_>, mut snapshot: Content) -> Result<Page> {
     snapshot.page.published_revision = Some(snapshot.page.revision);
     let page = &snapshot.page;
     check_published_paths(db, page)?;
-    let mut draft = require_page(db, &page.id)?;
-    draft.published_revision = page.published_revision;
-    db.exec_drop(
-        "UPDATE pages SET data=? WHERE id=?",
-        (json(&draft)?, &page.id),
-    )
-    .map_err(db_error)?;
+    let draft = store::mark_published(db, &page.id, page.revision)?;
     // A newer publication supersedes any pending schedule for this page.
     db.exec_drop(
         "DELETE FROM scheduled_publications WHERE page_id=?",
@@ -801,18 +764,8 @@ async fn delete_page(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            let page = require_page(db, &id)?;
-            let pages: Vec<Page> = load_all(db, "pages")?;
-            if pages.iter().any(|p| is_descendant(&p.slug, &page.slug)) {
-                return Err(ApiError::conflict("move or delete child pages first"));
-            }
-            db.exec_drop("DELETE FROM pages WHERE id=?", (id,))
-                .map_err(db_error)?;
-            if db.affected_rows() == 0 {
-                Err(ApiError::not_found())
-            } else {
-                Ok(StatusCode::NO_CONTENT)
-            }
+            store::delete_page(db, &id)?;
+            Ok(StatusCode::NO_CONTENT)
         })
         .await
 }
@@ -1045,9 +998,6 @@ fn validate_schema_change(
     }
     Ok(())
 }
-fn validate_page(db: &mut impl Queryable, page: &Page) -> Result<()> {
-    Definitions::load(db, std::slice::from_ref(page))?.validate(page)
-}
 
 // One operation's definitions, shared by validation and snapshot construction.
 // Never retained across transactions, so schema changes need no cache invalidation.
@@ -1233,52 +1183,6 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     }
     Ok(())
 }
-/// Records the draft slugs and aliases of `pages`, which the caller is writing, in
-/// page_paths, after checking them against every other page's draft and published paths.
-fn claim_paths(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
-    for page in pages {
-        db.exec_drop("DELETE FROM page_paths WHERE page_id=?", (&page.id,))
-            .map_err(db_error)?;
-    }
-    for page in pages {
-        for path in std::iter::once(&page.slug).chain(&page.aliases) {
-            db.exec_drop(
-                "INSERT INTO page_paths(path,page_id) VALUES(?,?)",
-                (path, &page.id),
-            )
-            .map_err(|error| match &error {
-                mysql::Error::MySqlError(e) if e.code == 1062 => {
-                    ApiError::conflict("a page or alias already uses this path")
-                }
-                _ => db_error(error),
-            })?;
-        }
-    }
-    for page in pages {
-        for path in std::iter::once(&page.slug).chain(&page.aliases) {
-            let owner: Option<String> = db
-                .exec_first("SELECT page_id FROM route_aliases WHERE slug=?", (path,))
-                .map_err(db_error)?;
-            if owner.is_some_and(|owner| owner != page.id) {
-                return Err(ApiError::conflict(
-                    "a published alias already uses this path",
-                ));
-            }
-        }
-        for path in &page.aliases {
-            let owner: Option<String> = db
-                .exec_first("SELECT page_id FROM snapshots WHERE slug=?", (path,))
-                .map_err(db_error)?;
-            if owner.is_some_and(|owner| owner != page.id) {
-                return Err(ApiError::conflict(
-                    "a published page already uses this alias path",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn is_descendant(path: &str, parent: &str) -> bool {
     path != parent
         && (parent == "/"
@@ -1357,14 +1261,6 @@ fn load_one<T: serde::de::DeserializeOwned>(
         .exec_first(format!("SELECT data FROM {table} WHERE id=?"), (id,))
         .map_err(db_error)?;
     parse(&raw.ok_or_else(ApiError::not_found)?)
-}
-fn insert_page(db: &mut Locked<'_>, page: &Page) -> Result<()> {
-    db.exec_drop(
-        "INSERT INTO pages(id,slug,data) VALUES(?,?,?)",
-        (&page.id, &page.slug, json(page)?),
-    )
-    .map_err(constraint_error)?;
-    Ok(())
 }
 fn json<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|_| {

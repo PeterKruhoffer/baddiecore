@@ -1808,6 +1808,35 @@ async fn moving_a_branch_updates_only_descendant_drafts_and_invalidates_stale_sa
 }
 
 #[tokio::test]
+async fn branch_moves_revalidate_descendant_drafts() {
+    let app = setup().await;
+    let mut parent = create_test_page(&app, "/about").await;
+    let child = create_test_page(&app, "/about/team").await;
+    // A draft saved before a validation rule existed, or edited in MySQL directly.
+    Pool::new(Opts::from_url(&app.db.url).unwrap())
+        .unwrap()
+        .get_conn()
+        .unwrap()
+        .exec_drop(
+            "UPDATE pages SET data=JSON_SET(data,'$.title','') WHERE id=?",
+            (&child.id,),
+        )
+        .unwrap();
+    parent.slug = "/company".into();
+    let response = call(
+        &app.app,
+        "PUT",
+        &format!("/api/admin/pages/{}", parent.id),
+        Some(&app.cookie),
+        Some(&parent),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let pages = bootstrap(&app).await.pages;
+    assert!(pages.iter().any(|p| p.slug == "/about/team"));
+}
+
+#[tokio::test]
 async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_atomically() {
     let app = setup().await;
     let parent = create_test_page(&app, "/a").await;

@@ -23,7 +23,7 @@ use tempfile::NamedTempFile;
 use crate::{
     ApiError, Block, Component, Definitions, Page, StoredData, Template,
     db::{Locked, TransactionMode, transaction},
-    insert_page, json, load_data, validate_component, validate_template,
+    json, load_data, validate_component, validate_template,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -792,33 +792,11 @@ fn merge(
         };
         desired.push(page);
     }
-    // Free all changed paths first, allowing atomic swaps without touching snapshot rows.
-    for page in &desired {
-        if let Some(old) = old_by_id.get(page.id.as_str())
-            && old.slug != page.slug
-        {
-            tx.exec_drop(
-                "UPDATE pages SET slug=? WHERE id=?",
-                (
-                    format!("__baddiecore_import_{}", file_name(&page.id)),
-                    &page.id,
-                ),
-            )
-            .map_err(crate::db_error)?;
-        }
-    }
-    for page in &desired {
-        match old_by_id.get(page.id.as_str()) {
-            Some(old) if **old == *page => {}
-            Some(_) => tx
-                .exec_drop(
-                    "UPDATE pages SET slug=?,data=? WHERE id=?",
-                    (&page.slug, json(page)?, &page.id),
-                )
-                .map_err(crate::constraint_error)?,
-            None => insert_page(tx, page)?,
-        }
-    }
+    let changed: Vec<Page> = desired
+        .into_iter()
+        .filter(|page| old_by_id.get(page.id.as_str()) != Some(&page))
+        .collect();
+    crate::store::save_pages(tx, &changed)?;
     // Delete definitions last, once pages and templates have moved off them.
     for group in ["templates", "components"] {
         for (_, id) in deleted.iter().filter(|(g, _)| *g == group) {
@@ -830,8 +808,6 @@ fn merge(
     for page in &pages {
         definitions.validate(page)?;
     }
-    desired.retain(|page| old_by_id.get(page.id.as_str()) != Some(&page));
-    crate::claim_paths(tx, &desired)?;
     for paths in [
         &mut merged.created,
         &mut merged.updated,
