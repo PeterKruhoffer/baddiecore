@@ -4614,3 +4614,61 @@ async fn media_fields_reference_uploads_and_block_deleting_used_media() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn editing_alt_text_does_not_invalidate_a_pending_review() {
+    let app = setup().await;
+    let media: baddiecore::media::Media =
+        read(upload(&app.app, &app.cookie, "hero.png", PNG.to_vec()).await).await;
+    let mut home = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    home.blocks[0]
+        .fields
+        .insert("image".into(), media.id.as_str().into());
+    let home: Page = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&home),
+        )
+        .await,
+    )
+    .await;
+    let submitted: Value = read(
+        call(
+            &app.app,
+            "POST",
+            "/api/admin/pages/home/submit",
+            Some(&app.cookie),
+            Some(&json!({"revision": home.revision})),
+        )
+        .await,
+    )
+    .await;
+    let uri = format!("/api/admin/media/{}", media.id.as_str());
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &uri,
+            Some(&json!({"alt": "A new description"}))
+        )
+        .await,
+        StatusCode::OK
+    );
+    let approved = call(
+        &app.app,
+        "POST",
+        "/api/admin/reviews/home",
+        Some(&app.cookie),
+        Some(&json!({"revision": home.revision, "submission_id": submitted["submission_id"], "approve": true, "feedback": ""})),
+    )
+    .await;
+    assert_eq!(approved.status(), StatusCode::OK);
+}

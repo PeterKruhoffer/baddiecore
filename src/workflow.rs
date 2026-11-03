@@ -375,7 +375,23 @@ pub(super) async fn decide(
             }
             let page = require_page(db, &id)?;
             let current = current_content(db, page)?;
-            if current != review.content {
+            // Media is compared by ID: its bytes never change, and alt text edits apply to every page.
+            let Content {
+                page,
+                template,
+                components,
+                media,
+            } = &review.content;
+            let same_media = current
+                .media
+                .iter()
+                .map(|m| &m.id)
+                .eq(media.iter().map(|m| &m.id));
+            if current.page != *page
+                || current.template != *template
+                || current.components != *components
+                || !same_media
+            {
                 return Err(ApiError::conflict(
                     "draft or schema changed; submit again before reviewing",
                 ));
