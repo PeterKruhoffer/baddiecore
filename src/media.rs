@@ -95,7 +95,7 @@ fn is_avif(bytes: &[u8]) -> bool {
 /// are not media IDs are skipped; validation reports them.
 pub(crate) fn referenced<'a>(
     page: &'a Page,
-    components: &'a HashMap<String, Component>,
+    components: &'a HashMap<ComponentId, Component>,
 ) -> impl Iterator<Item = MediaId> + 'a {
     page.blocks.iter().flat_map(move |block| {
         components
@@ -214,14 +214,14 @@ pub(super) async fn delete(
 
 /// Paths of pages whose draft, published snapshot, scheduled snapshot or review uses `id`.
 fn users(db: &mut impl Queryable, id: &MediaId) -> Result<BTreeSet<String>> {
-    let components: HashMap<String, Component> = load_all::<Component>(db, "components")?
+    let components: HashMap<ComponentId, Component> = load_all::<Component>(db, "components")?
         .into_iter()
         .map(|component| (component.id.clone(), component))
         .collect();
     let mut users = BTreeSet::new();
     for page in load_all::<Page>(db, "pages")? {
         if referenced(&page, &components).any(|used| &used == id) {
-            users.insert(page.slug);
+            users.insert(page.slug.into());
         }
     }
     let snapshots: Vec<String> = db
@@ -238,7 +238,7 @@ fn users(db: &mut impl Queryable, id: &MediaId) -> Result<BTreeSet<String>> {
     );
     for content in contents {
         if content.media.iter().any(|media| &media.id == id) {
-            users.insert(content.page.slug);
+            users.insert(content.page.slug.into());
         }
     }
     Ok(users)

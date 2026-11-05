@@ -3,7 +3,9 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use baddiecore::{AppState, Bootstrap, Component, Content, Field, FieldKind, Page, router};
+use baddiecore::{
+    AppState, Bootstrap, Component, Content, Field, FieldKind, Page, SitePath, router,
+};
 use http_body_util::BodyExt;
 use mysql::{Opts, Pool, prelude::Queryable};
 use serde::{Serialize, de::DeserializeOwned};
@@ -536,6 +538,8 @@ async fn slug_and_origin_safety_are_enforced() {
             StatusCode::BAD_REQUEST,
             "accepted {slug}"
         );
+        let error: Value = read(response).await;
+        assert!(error["error"].is_string(), "{slug}: {error}");
     }
     let request = Request::builder()
         .method("POST")
@@ -674,7 +678,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    home.slug = "/moved".into();
+    home.slug = path("/moved");
     let response = call(
         &app.app,
         "PUT",
@@ -707,7 +711,7 @@ async fn publish_conflict_rolls_back_and_delete_cascades() {
         .status(),
         StatusCode::OK
     );
-    replacement.slug = "/original".into();
+    replacement.slug = path("/original");
     assert_eq!(
         call(
             &app.app,
@@ -1279,7 +1283,7 @@ async fn custom_auth_guards_cms_without_affecting_public_content() {
 async fn aliases_redirect_only_after_publication_and_follow_the_published_path() {
     let app = setup().await;
     let mut page = create_test_page(&app, "/shop/campaign-2026").await;
-    page.aliases = vec!["/summer-sale".into(), "/Sale".into()];
+    page.aliases = vec![path("/summer-sale"), path("/Sale")];
     let url = format!("/api/admin/pages/{}", page.id);
     page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
     assert_ne!(
@@ -1344,8 +1348,8 @@ async fn aliases_redirect_only_after_publication_and_follow_the_published_path()
             .status(),
         StatusCode::MOVED_PERMANENTLY
     );
-    page.slug = "/shop/autumn".into();
-    page.aliases = vec!["/summer-sale".into(), "/shop/campaign-2026".into()];
+    page.slug = path("/shop/autumn");
+    page.aliases = vec![path("/summer-sale"), path("/shop/campaign-2026")];
     page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
     assert_eq!(
         call(&app.app, "GET", "/summer-sale", None, None::<&Value>)
@@ -1404,7 +1408,7 @@ async fn aliases_redirect_only_after_publication_and_follow_the_published_path()
             .status(),
         StatusCode::MOVED_PERMANENTLY
     );
-    page.aliases.push("/autumn-sale".into());
+    page.aliases.push(path("/autumn-sale"));
     page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
     assert_eq!(
         call(
@@ -1454,8 +1458,9 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
         vec!["/ümlaut"],
         vec!["/bad//path"],
     ] {
-        let mut invalid = first.clone();
-        invalid.aliases = aliases.into_iter().map(String::from).collect();
+        // Invalid paths cannot be built as a SitePath, so send them as raw JSON.
+        let mut invalid = serde_json::to_value(&first).unwrap();
+        invalid["aliases"] = json!(aliases);
         assert_eq!(
             call(
                 &app.app,
@@ -1469,8 +1474,8 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
             StatusCode::BAD_REQUEST
         );
     }
-    let mut invalid = first.clone();
-    invalid.aliases.push(format!("/{}", "a".repeat(2048)));
+    let mut invalid = serde_json::to_value(&first).unwrap();
+    invalid["aliases"] = json!([format!("/{}", "a".repeat(2048))]);
     assert_eq!(
         call(
             &app.app,
@@ -1483,7 +1488,8 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
         .status(),
         StatusCode::BAD_REQUEST
     );
-    invalid.aliases = vec!["/second".into()];
+    let mut invalid = first.clone();
+    invalid.aliases = vec![path("/second")];
     assert_eq!(
         call(
             &app.app,
@@ -1496,9 +1502,9 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
         .status(),
         StatusCode::CONFLICT
     );
-    first.aliases = vec!["/offer".into()];
+    first.aliases = vec![path("/offer")];
     first = read(call(&app.app, "PUT", &first_url, Some(&app.cookie), Some(&first)).await).await;
-    second.aliases = vec!["/offer".into()];
+    second.aliases = vec![path("/offer")];
     assert_eq!(
         call(
             &app.app,
@@ -1512,7 +1518,7 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
         StatusCode::CONFLICT
     );
     second.aliases.clear();
-    second.slug = "/offer".into();
+    second.slug = path("/offer");
     assert_eq!(
         call(
             &app.app,
@@ -1549,14 +1555,14 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
         .status(),
         StatusCode::OK
     );
-    first.slug = "/renamed".into();
+    first.slug = path("/renamed");
     first.aliases.clear();
     let _: Page =
         read(call(&app.app, "PUT", &first_url, Some(&app.cookie), Some(&first)).await).await;
-    second.slug = "/second".into();
+    second.slug = path("/second");
     // Neither a live alias nor a live page path can be claimed by another draft alias.
     for path in ["/offer", "/first"] {
-        second.aliases = vec![path.into()];
+        second.aliases = vec![path.parse().unwrap()];
         assert_eq!(
             call(
                 &app.app,
@@ -1604,7 +1610,7 @@ async fn aliases_reject_unsafe_paths_collisions_and_imports_atomically() {
 async fn opening_an_older_database_indexes_existing_draft_aliases() {
     let app = setup().await;
     let mut page = create_test_page(&app, "/first").await;
-    page.aliases = vec!["/offer".into()];
+    page.aliases = vec![path("/offer")];
     let url = format!("/api/admin/pages/{}", page.id);
     read::<Page>(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
     // Databases from before the page_paths migration have neither that table, nor
@@ -1639,14 +1645,14 @@ async fn editors_need_alias_path_grants_and_review_approval_publishes_aliases() 
     let scoped = member_app(&app);
     let mut page = create_test_page(&app, "/news/story").await;
     let url = format!("/api/admin/pages/{}", page.id);
-    page.aliases = vec!["/newspaper/story".into()];
+    page.aliases = vec![path("/newspaper/story")];
     assert_eq!(
         call(&scoped, "PUT", &url, Some("editor"), Some(&page))
             .await
             .status(),
         StatusCode::FORBIDDEN
     );
-    page.aliases = vec!["/news/offer".into()];
+    page.aliases = vec![path("/news/offer")];
     page = read(call(&scoped, "PUT", &url, Some("editor"), Some(&page)).await).await;
     let review: Value = read(
         call(
@@ -1674,7 +1680,7 @@ async fn editors_need_alias_path_grants_and_review_approval_publishes_aliases() 
     );
     // An admin-owned alias outside the editor's grants may remain during content edits,
     // but that editor cannot remove or change it.
-    page.aliases.push("/outside".into());
+    page.aliases.push(path("/outside"));
     page = read(call(&scoped, "PUT", &url, Some("admin"), Some(&page)).await).await;
     page.title = "Edited copy".into();
     page = read(call(&scoped, "PUT", &url, Some("editor"), Some(&page)).await).await;
@@ -1716,7 +1722,7 @@ async fn moving_a_branch_updates_only_descendant_drafts_and_invalidates_stale_sa
     )
     .await;
     assert_eq!(published.status(), StatusCode::OK);
-    parent.slug = "/company".into();
+    parent.slug = path("/company");
     let response = call(
         &app.app,
         "PUT",
@@ -1822,7 +1828,7 @@ async fn branch_moves_revalidate_descendant_drafts() {
             (&child.id,),
         )
         .unwrap();
-    parent.slug = "/company".into();
+    parent.slug = path("/company");
     let response = call(
         &app.app,
         "PUT",
@@ -1848,8 +1854,8 @@ async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_a
         ("/destination".to_string(), StatusCode::CONFLICT),
         (format!("/{}", "x".repeat(2045)), StatusCode::BAD_REQUEST),
     ] {
-        let mut moved = parent.clone();
-        moved.slug = path;
+        let mut moved = serde_json::to_value(&parent).unwrap();
+        moved["slug"] = json!(path);
         assert_eq!(
             call(
                 &app.app,
@@ -1870,7 +1876,7 @@ async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_a
         .into_iter()
         .find(|p| p.slug == "/")
         .unwrap();
-    home.slug = "/moved-home".into();
+    home.slug = path("/moved-home");
     assert_eq!(
         call(
             &app.app,
@@ -1886,7 +1892,7 @@ async fn branch_moves_reject_cycles_collisions_root_moves_and_long_descendants_a
     // Moving to a missing ancestor can overlap old subtree paths without a real collision.
     let mut nested = create_test_page(&app, "/folder/branch").await;
     let nested_child = create_test_page(&app, "/folder/branch/branch").await;
-    nested.slug = "/folder".into();
+    nested.slug = path("/folder");
     assert_eq!(
         call(
             &app.app,
@@ -2087,8 +2093,8 @@ async fn package_path_swaps_are_atomic_and_bring_missing_definitions() {
     let pages = bootstrap(&app).await.pages;
     let slug = |id: &str| pages.iter().find(|p| p.id == id).unwrap().slug.clone();
     assert_eq!(
-        (slug(&first.id), slug(&second.id)),
-        ("/second".into(), "/first".into())
+        (slug(first.id.as_str()), slug(second.id.as_str())),
+        (path("/second"), path("/first"))
     );
 
     // New definitions arrive with the pages that use them in another installation.
@@ -2392,7 +2398,7 @@ async fn membership_scopes_and_admin_routes_cannot_be_bypassed() {
         StatusCode::FORBIDDEN
     );
     let mut moved = news.clone();
-    moved.slug = "/outside".into();
+    moved.slug = path("/outside");
     assert_eq!(
         call(
             &scoped,
@@ -2411,7 +2417,7 @@ async fn membership_scopes_and_admin_routes_cannot_be_bypassed() {
         &child
     );
     // Valid move affects descendants and increments their revisions.
-    moved.slug = "/other/news".into();
+    moved.slug = path("/other/news");
     assert_eq!(
         call(
             &scoped,
@@ -3303,7 +3309,7 @@ async fn packages_move_page_branches_between_installations_as_drafts() {
     let installed = bootstrap(&target).await;
     let page = installed.pages.iter().find(|p| p.id == news.id).unwrap();
     assert_eq!((page.revision, page.published_revision), (1, None));
-    assert_eq!(page.template_id, template_id);
+    assert_eq!(page.template_id.as_str(), template_id);
     assert_eq!(installed.templates.len(), original.templates.len() + 1);
     assert_eq!(
         installed
@@ -4259,7 +4265,7 @@ async fn scheduled_publication_records_failures_and_review_approval_schedules() 
     );
 
     // Move the draft away and let another page publish at the scheduled path.
-    page.slug = "/news/b".into();
+    page.slug = path("/news/b");
     call(
         &app.app,
         "PUT",
@@ -4314,7 +4320,7 @@ async fn scheduled_publication_cannot_take_an_alias_another_draft_has_claimed() 
     let state = AppState::open(&app.db.url, None, false).unwrap();
     let mut page = create_test_page(&app, "/a").await;
     let url = format!("/api/admin/pages/{}", page.id);
-    page.aliases = vec!["/offer".into()];
+    page.aliases = vec![path("/offer")];
     page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
     let publish_at = unix_now() + 2;
     let response = call(
@@ -4671,4 +4677,9 @@ async fn editing_alt_text_does_not_invalidate_a_pending_review() {
     )
     .await;
     assert_eq!(approved.status(), StatusCode::OK);
+}
+
+/// A valid site path for building `Page` values in tests.
+fn path(value: &str) -> SitePath {
+    value.parse().unwrap()
 }

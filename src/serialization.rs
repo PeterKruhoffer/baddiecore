@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::{
-    ApiError, Block, Component, Definitions, Page, StoredData, Template,
+    ApiError, Block, Component, ComponentId, Definitions, Page, PageId, SitePath, StoredData,
+    Template, TemplateId,
     db::{Locked, TransactionMode, transaction},
     json, load_data, validate_component, validate_template,
 };
@@ -86,12 +87,12 @@ struct File<T> {
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct PageDraft {
-    id: String,
+    id: PageId,
     title: String,
-    slug: String,
+    slug: SitePath,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    aliases: Vec<String>,
-    template_id: String,
+    aliases: Vec<SitePath>,
+    template_id: TemplateId,
     blocks: Vec<BlockDraft>,
 }
 
@@ -99,7 +100,7 @@ struct PageDraft {
 #[serde(deny_unknown_fields)]
 struct BlockDraft {
     id: String,
-    component_id: String,
+    component_id: ComponentId,
     region: String,
     fields: BTreeMap<String, String>,
 }
@@ -592,7 +593,6 @@ pub fn push(db: &Pool, directory: &Path, force: bool, dry_run: bool) -> Result<S
                 }
             }
         }
-        changes.check_ids()?;
         merge(tx, changes, DefinitionPolicy::Replace)?;
         save_base(
             tx,
@@ -669,21 +669,6 @@ impl Items {
     pub(crate) fn pages(&self) -> usize {
         self.drafts.len()
     }
-    fn check_ids(&self) -> Result<(), Error> {
-        for id in self
-            .components
-            .iter()
-            .map(|x| &x.id)
-            .chain(self.templates.iter().map(|x| &x.id))
-            .chain(self.drafts.iter().map(|x| &x.id))
-        {
-            if id.trim().is_empty() || id.chars().count() > 255 {
-                return Err(Error("item ids must contain 1 to 255 characters".into()));
-            }
-            // Duplicate IDs are rejected within a kind; IDs may intentionally overlap across kinds.
-        }
-        Ok(())
-    }
 }
 
 fn add_unique<T: HasId>(items: &mut Vec<T>, item: T) -> Option<String> {
@@ -718,7 +703,6 @@ pub(crate) fn merge_items(
     items: Items,
     definitions: DefinitionPolicy,
 ) -> crate::Result<Merged> {
-    items.check_ids().map_err(|e| ApiError::bad(e.0))?;
     merge(tx, items, definitions)
 }
 
@@ -742,7 +726,7 @@ fn merge(
     let mut merged = Merged::default();
     for item in &components {
         if definitions == DefinitionPolicy::AddMissing {
-            if exists(tx, "components", &item.id)? {
+            if exists(tx, "components", item.id.as_str())? {
                 continue;
             }
             merged.components_added += 1;
@@ -756,7 +740,7 @@ fn merge(
     }
     for item in &templates {
         if definitions == DefinitionPolicy::AddMissing {
-            if exists(tx, "templates", &item.id)? {
+            if exists(tx, "templates", item.id.as_str())? {
                 continue;
             }
             merged.templates_added += 1;
@@ -778,15 +762,15 @@ fn merge(
         }
         let page = match old_by_id.get(draft.id.as_str()) {
             Some(old) if PageDraft::from(*old) == draft => {
-                merged.unchanged.push(draft.slug);
+                merged.unchanged.push(draft.slug.to_string());
                 (*old).clone()
             }
             Some(old) => {
-                merged.updated.push(draft.slug.clone());
+                merged.updated.push(draft.slug.to_string());
                 draft.page(old.revision + 1, old.published_revision)
             }
             None => {
-                merged.created.push(draft.slug.clone());
+                merged.created.push(draft.slug.to_string());
                 draft.page(1, None)
             }
         };
@@ -848,17 +832,17 @@ trait HasId {
 }
 impl HasId for Component {
     fn id(&self) -> &str {
-        &self.id
+        self.id.as_str()
     }
 }
 impl HasId for Template {
     fn id(&self) -> &str {
-        &self.id
+        self.id.as_str()
     }
 }
 impl HasId for PageDraft {
     fn id(&self) -> &str {
-        &self.id
+        self.id.as_str()
     }
 }
 
@@ -997,14 +981,14 @@ mod tests {
     #[test]
     fn deterministic_page_yaml() {
         let draft = PageDraft {
-            id: "p".into(),
+            id: "p".parse().unwrap(),
             title: "T".into(),
-            slug: "/".into(),
-            aliases: vec!["/welcome".into()],
-            template_id: "t".into(),
+            slug: "/".parse().unwrap(),
+            aliases: vec!["/welcome".parse().unwrap()],
+            template_id: "t".parse().unwrap(),
             blocks: vec![BlockDraft {
                 id: "b".into(),
-                component_id: "c".into(),
+                component_id: "c".parse().unwrap(),
                 region: "r".into(),
                 fields: BTreeMap::from([("z".into(), "1".into()), ("a".into(), "2".into())]),
             }],

@@ -10,7 +10,7 @@ use std::{
 };
 
 use axum::{
-    Extension, Json,
+    Extension,
     body::Bytes,
     extract::{Query, State},
     http::{StatusCode, header},
@@ -20,11 +20,11 @@ use serde::Deserialize;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    ApiError, AppState, Result, auth, is_descendant, load_data,
+    ApiError, AppState, ComponentId, Json, Result, SitePath, auth, load_data,
     serialization::{
         self, DefinitionPolicy, Items, MAX_FILE_SIZE, Merged, export_files, export_path,
     },
-    validate_slug, workflow,
+    workflow,
 };
 
 const MAX_ENTRIES: usize = 10_000;
@@ -41,15 +41,14 @@ pub(crate) async fn export(
     Extension(editor): Extension<auth::Editor>,
     Query(query): Query<ExportQuery>,
 ) -> Result<Response> {
-    let path = query.path;
-    validate_slug(&path)?;
-    let filename = package_filename(&path);
+    let path: SitePath = query.path.parse().map_err(ApiError::bad)?;
+    let filename = package_filename(path.as_str());
     let data = state
         .run_as(editor, move |db, access| {
             access.admin()?;
             let mut data = load_data(db, true)?;
             data.pages
-                .retain(|page| page.slug == path || is_descendant(&page.slug, &path));
+                .retain(|page| page.slug == path || page.slug.is_descendant_of(&path));
             if data.pages.is_empty() {
                 return Err(ApiError::bad("no pages at or below this path"));
             }
@@ -70,7 +69,7 @@ pub(crate) async fn export(
                         .flat_map(|p| &p.blocks)
                         .map(|b| &b.component_id),
                 )
-                .map(String::as_str)
+                .map(ComponentId::as_str)
                 .collect();
             data.components
                 .retain(|c| components.contains(c.id.as_str()));

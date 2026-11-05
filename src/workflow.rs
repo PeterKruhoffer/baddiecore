@@ -14,7 +14,7 @@ pub struct Member {
     pub id: String,
     pub name: String,
     pub role: Role,
-    pub paths: Vec<String>,
+    pub paths: Vec<SitePath>,
     pub groups: Vec<String>,
 }
 
@@ -22,7 +22,7 @@ pub struct Member {
 pub struct Group {
     pub id: String,
     pub name: String,
-    pub paths: Vec<String>,
+    pub paths: Vec<SitePath>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub struct Organization {
 pub struct Access {
     pub id: String,
     pub role: Role,
-    pub paths: Vec<String>,
+    pub paths: Vec<SitePath>,
 }
 
 fn forbidden() -> ApiError {
@@ -44,14 +44,14 @@ fn forbidden() -> ApiError {
 }
 
 impl Access {
-    pub fn allows(&self, path: &str) -> bool {
+    pub fn allows(&self, path: &SitePath) -> bool {
         self.role != Role::Editor
             || self
                 .paths
                 .iter()
-                .any(|scope| path == scope || is_descendant(path, scope))
+                .any(|scope| path == scope || path.is_descendant_of(scope))
     }
-    pub(crate) fn page(&self, path: &str) -> Result<()> {
+    pub(crate) fn page(&self, path: &SitePath) -> Result<()> {
         self.allows(path).then_some(()).ok_or_else(forbidden)
     }
     pub(crate) fn admin(&self) -> Result<()> {
@@ -217,9 +217,6 @@ pub(super) async fn save_organization(
                         "group IDs and names are required; IDs must be unique",
                     ));
                 }
-                for path in &group.paths {
-                    validate_slug(path)?;
-                }
             }
             let mut members = HashSet::new();
             for member in &org.members {
@@ -233,9 +230,6 @@ pub(super) async fn save_organization(
                 }
                 if member.groups.iter().any(|g| !groups.contains(g)) {
                     return Err(ApiError::bad("unknown group"));
-                }
-                for path in &member.paths {
-                    validate_slug(path)?;
                 }
             }
             if !org.members.iter().any(|m| m.role == Role::Admin)
@@ -272,7 +266,7 @@ pub enum ReviewStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Review {
-    pub id: String,
+    pub id: PageId,
     pub submission_id: String,
     pub content: Content,
     pub submitted_by: String,
@@ -319,7 +313,7 @@ pub(super) async fn submit(
 ) -> Result<Json<Review>> {
     state
         .run_as(editor, move |db, access| {
-            let page = require_page(db, &id)?;
+            let page = require_page(db, &path_id(&id)?)?;
             access.page(&page.slug)?;
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
@@ -328,7 +322,7 @@ pub(super) async fn submit(
                 schedule::validate_time(publish_at)?;
             }
             let review = Review {
-                id: id.clone(),
+                id: page.id.clone(),
                 submission_id: Uuid::new_v4().to_string(),
                 content: current_content(db, page)?,
                 submitted_by: access.id,
@@ -373,7 +367,7 @@ pub(super) async fn decide(
                     "submission is no longer pending at this revision",
                 ));
             }
-            let page = require_page(db, &id)?;
+            let page = require_page(db, &path_id(&id)?)?;
             let current = current_content(db, page)?;
             // Media is compared by ID: its bytes never change, and alt text edits apply to every page.
             let Content {
@@ -437,22 +431,22 @@ mod tests {
                 id: "user".into(),
                 name: "Editor".into(),
                 role: Role::Editor,
-                paths: vec!["/news".into()],
+                paths: vec!["/news".parse().unwrap()],
                 groups: vec!["team".into()],
             }],
             groups: vec![Group {
                 id: "team".into(),
                 name: "Team".into(),
-                paths: vec!["/about/team".into()],
+                paths: vec!["/about/team".parse().unwrap()],
             }],
         };
         assert!(resolve(org.clone(), "admin".into()).is_err());
         let access = resolve(org, "user".into()).unwrap();
         for path in ["/news", "/news/a", "/about/team", "/about/team/a"] {
-            assert!(access.allows(path));
+            assert!(access.allows(&path.parse().unwrap()));
         }
         for path in ["/", "/newspaper", "/about", "/about/teams", "/News"] {
-            assert!(!access.allows(path));
+            assert!(!access.allows(&path.parse().unwrap()));
         }
         assert!(access.admin().is_err());
         assert!(access.reviewer().is_err());

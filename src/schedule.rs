@@ -7,7 +7,7 @@ use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Schedule {
-    pub page_id: String,
+    pub page_id: PageId,
     /// The page revision that goes live.
     pub revision: i64,
     /// Unix time in seconds.
@@ -67,17 +67,25 @@ pub(crate) fn store(
 }
 
 pub(crate) fn load(db: &mut impl Queryable) -> Result<Vec<Schedule>> {
-    db.query_map(
-        "SELECT page_id,revision,publish_at,scheduled_by,error FROM scheduled_publications ORDER BY publish_at",
-        |(page_id, revision, publish_at, scheduled_by, error)| Schedule {
-            page_id,
-            revision,
-            publish_at,
-            scheduled_by,
-            error,
-        },
-    )
-    .map_err(db_error)
+    let rows: Vec<(String, i64, i64, String, Option<String>)> = db
+        .query("SELECT page_id,revision,publish_at,scheduled_by,error FROM scheduled_publications ORDER BY publish_at")
+        .map_err(db_error)?;
+    rows.into_iter()
+        .map(|(page_id, revision, publish_at, scheduled_by, error)| {
+            Ok(Schedule {
+                page_id: PageId::parse(&page_id).ok_or_else(|| {
+                    ApiError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "stored data is invalid".into(),
+                    )
+                })?,
+                revision,
+                publish_at,
+                scheduled_by,
+                error,
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -95,7 +103,7 @@ pub(super) async fn schedule_page(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            let page = require_page(db, &id)?;
+            let page = require_page(db, &path_id(&id)?)?;
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
             }

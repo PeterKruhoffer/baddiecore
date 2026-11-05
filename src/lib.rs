@@ -5,8 +5,11 @@ use std::{
 };
 
 use axum::{
-    Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path as AxumPath, Query, Request, State},
+    Extension, Router,
+    extract::{
+        DefaultBodyLimit, FromRequest, Path as AxumPath, Query, Request, State,
+        rejection::JsonRejection,
+    },
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -21,10 +24,12 @@ use tower_http::{
 use uuid::Uuid;
 
 use db::{Database, Locked, TransactionMode};
+pub use ids::{ComponentId, PageId, SitePath, TemplateId};
 
 pub mod auth;
 mod db;
 pub mod headless;
+pub mod ids;
 pub mod media;
 mod package;
 pub mod richtext;
@@ -54,7 +59,7 @@ pub enum FieldKind {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Component {
-    pub id: String,
+    pub id: ComponentId,
     pub name: String,
     pub description: String,
     pub renderer: Renderer,
@@ -72,12 +77,12 @@ pub enum Renderer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Region {
     pub name: String,
-    pub allowed_components: Vec<String>,
+    pub allowed_components: Vec<ComponentId>,
     pub max_components: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Template {
-    pub id: String,
+    pub id: TemplateId,
     pub name: String,
     pub description: String,
     pub regions: Vec<Region>,
@@ -85,18 +90,18 @@ pub struct Template {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
     pub id: String,
-    pub component_id: String,
+    pub component_id: ComponentId,
     pub region: String,
     pub fields: HashMap<String, String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Page {
-    pub id: String,
+    pub id: PageId,
     pub title: String,
-    pub slug: String,
+    pub slug: SitePath,
     #[serde(default)]
-    pub aliases: Vec<String>,
-    pub template_id: String,
+    pub aliases: Vec<SitePath>,
+    pub template_id: TemplateId,
     pub blocks: Vec<Block>,
     pub revision: i64,
     pub published_revision: Option<i64>,
@@ -154,6 +159,34 @@ impl IntoResponse for ApiError {
     }
 }
 type Result<T> = std::result::Result<T, ApiError>;
+
+/// JSON body extractor and response. Use it instead of `axum::Json`: a body that
+/// fails to parse, including an ID or path that fails its type's `parse`, becomes
+/// a 400 with the contract's `{error}` shape rather than axum's plain-text 422.
+#[derive(Debug)]
+pub(crate) struct Json<T>(pub T);
+impl<T: serde::de::DeserializeOwned, S: Send + Sync> FromRequest<S> for Json<T> {
+    type Rejection = ApiError;
+    async fn from_request(request: Request, state: &S) -> Result<Self> {
+        match axum::Json::<T>::from_request(request, state).await {
+            Ok(axum::Json(value)) => Ok(Self(value)),
+            Err(rejection) => {
+                let status = match rejection {
+                    JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => {
+                        StatusCode::BAD_REQUEST
+                    }
+                    _ => rejection.status(),
+                };
+                Err(ApiError(status, rejection.body_text()))
+            }
+        }
+    }
+}
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
 
 impl AppState {
     /// Opens the CMS with built-in local accounts. When no administrator can
@@ -339,7 +372,7 @@ fn seed(db: &Pool) -> Result<()> {
         let mut components = Vec::new();
         for (id, name, renderer, fields) in specs {
             let component = Component {
-                id: id.into(),
+                id: id.parse().expect("seed component id"),
                 name: name.into(),
                 description: format!("{name} content block"),
                 renderer,
@@ -362,7 +395,7 @@ fn seed(db: &Pool) -> Result<()> {
             components.push(component);
         }
         let template = Template {
-            id: "homepage".into(),
+            id: "homepage".parse().expect("seed template id"),
             name: "Homepage".into(),
             description: "A flexible homepage".into(),
             regions: vec![Region {
@@ -379,7 +412,7 @@ fn seed(db: &Pool) -> Result<()> {
         let blocks = vec![
             Block {
                 id: "welcome-hero".into(),
-                component_id: "hero".into(),
+                component_id: "hero".parse().expect("seed component id"),
                 region: "main".into(),
                 fields: HashMap::from([
                     ("eyebrow".into(), "Welcome".into()),
@@ -392,7 +425,7 @@ fn seed(db: &Pool) -> Result<()> {
             },
             Block {
                 id: "welcome-text".into(),
-                component_id: "text".into(),
+                component_id: "text".parse().expect("seed component id"),
                 region: "main".into(),
                 fields: HashMap::from([
                     ("title".into(), "Start publishing".into()),
@@ -404,9 +437,9 @@ fn seed(db: &Pool) -> Result<()> {
             },
         ];
         let page = Page {
-            id: "home".into(),
+            id: "home".parse().expect("seed page id"),
             title: "Home".into(),
-            slug: "/".into(),
+            slug: SitePath::root(),
             aliases: vec![],
             template_id: template.id.clone(),
             blocks,
@@ -471,7 +504,7 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
 
 async fn redirect_alias(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
-    if matches!(*request.method(), Method::GET | Method::HEAD) && validate_slug(&path).is_ok() {
+    if matches!(*request.method(), Method::GET | Method::HEAD) && SitePath::parse(&path).is_some() {
         let target = state
             .db
             .read(move |db| {
@@ -584,8 +617,8 @@ fn load_all<T: serde::de::DeserializeOwned>(
 #[derive(Deserialize)]
 struct NewPage {
     title: String,
-    slug: String,
-    template_id: String,
+    slug: SitePath,
+    template_id: TemplateId,
 }
 async fn create_page(
     State(state): State<AppState>,
@@ -594,10 +627,9 @@ async fn create_page(
 ) -> Result<(StatusCode, Json<Page>)> {
     state
         .run_as(editor, move |db, access| {
-            validate_slug(&input.slug)?;
             access.page(&input.slug)?;
             let page = Page {
-                id: Uuid::new_v4().to_string(),
+                id: PageId::new(),
                 title: input.title,
                 slug: input.slug,
                 aliases: vec![],
@@ -619,10 +651,10 @@ async fn update_page(
 ) -> Result<Json<Page>> {
     state
         .run_as(editor, move |db, access| {
-            if page.id != id {
+            if page.id != id.as_str() {
                 return Err(ApiError::bad("page id does not match path"));
             }
-            let old = require_page(db, &id)?;
+            let old = require_page(db, &page.id)?;
             access.page(&old.slug)?;
             access.page(&page.slug)?;
             let old_aliases: HashSet<_> = old.aliases.iter().collect();
@@ -637,23 +669,24 @@ async fn update_page(
             page.revision += 1;
             let mut changed = Vec::new();
             if page.slug != old.slug {
-                if old.slug == "/" {
+                if old.slug == SitePath::root() {
                     return Err(ApiError::bad("the root page cannot be moved"));
                 }
-                if is_descendant(&page.slug, &old.slug) {
+                if page.slug.is_descendant_of(&old.slug) {
                     return Err(ApiError::bad("a page cannot move into its own subtree"));
                 }
                 let mut pages: Vec<Page> = load_all(db, "pages")?;
                 for child in &mut pages {
                     if child.id == page.id {
                         *child = page.clone();
-                    } else if is_descendant(&child.slug, &old.slug) {
+                    } else if child.slug.is_descendant_of(&old.slug) {
                         access.page(&child.slug)?;
-                        child.slug = format!(
-                            "{}{}",
-                            page.slug.trim_end_matches('/'),
-                            &child.slug[old.slug.len()..]
-                        );
+                        child.slug = child.slug.rebase(&old.slug, &page.slug).ok_or_else(|| {
+                            ApiError::bad(format!(
+                                "moving {} would give it an invalid path",
+                                child.slug
+                            ))
+                        })?;
                         child.revision += 1;
                         access.page(&child.slug)?;
                         changed.push(child.clone());
@@ -683,7 +716,7 @@ async fn publish_page(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            let page = require_page(db, &id)?;
+            let page = require_page(db, &path_id(&id)?)?;
             if page.revision != input.revision {
                 return Err(ApiError::conflict("stale revision"));
             }
@@ -702,7 +735,7 @@ fn check_published_paths(db: &mut impl Queryable, page: &Page) -> Result<()> {
         .map_err(db_error)?;
     if occupied
         .iter()
-        .any(|path| path == &page.slug || page.aliases.contains(path))
+        .any(|path| page.slug == path.as_str() || page.aliases.iter().any(|a| a == path.as_str()))
     {
         return Err(ApiError::conflict("a published path already exists"));
     }
@@ -764,7 +797,7 @@ async fn delete_page(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            store::delete_page(db, &id)?;
+            store::delete_page(db, &path_id(&id)?)?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
@@ -785,7 +818,7 @@ async fn create_template(
         .run_as(editor, move |db, access| {
             access.admin()?;
             let item = Template {
-                id: Uuid::new_v4().to_string(),
+                id: TemplateId::new(),
                 name: input.name,
                 description: input.description,
                 regions: input.regions,
@@ -809,10 +842,10 @@ async fn update_template(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            if item.id != id {
+            if item.id != id.as_str() {
                 return Err(ApiError::bad("template id does not match path"));
             }
-            require_template(db, &id)?;
+            require_template(db, &item.id)?;
             validate_template(db, &item)?;
             validate_schema_change(db, Some(&item), None)?;
             db.exec_drop("UPDATE templates SET data=? WHERE id=?", (json(&item)?, id))
@@ -897,7 +930,7 @@ async fn create_component(
         .run_as(editor, move |db, access| {
             access.admin()?;
             let item = Component {
-                id: Uuid::new_v4().to_string(),
+                id: ComponentId::new(),
                 name: input.name,
                 description: input.description,
                 renderer: input.renderer,
@@ -922,10 +955,10 @@ async fn update_component(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            if item.id != id {
+            if item.id != id.as_str() {
                 return Err(ApiError::bad("component id does not match path"));
             }
-            require_component(db, &id)?;
+            require_component(db, &item.id)?;
             validate_component(&item)?;
             validate_schema_change(db, None, Some(&item))?;
             db.exec_drop(
@@ -959,12 +992,12 @@ async fn content(
     State(state): State<AppState>,
     Query(query): Query<ContentQuery>,
 ) -> Result<Json<Content>> {
-    validate_slug(&query.slug)?;
+    let slug: SitePath = query.slug.parse().map_err(ApiError::bad)?;
     state
         .db
         .read(move |db| {
             let raw: Option<String> = db
-                .exec_first("SELECT data FROM snapshots WHERE slug=?", (query.slug,))
+                .exec_first("SELECT data FROM snapshots WHERE slug=?", (slug,))
                 .map_err(db_error)?;
             Ok(Json(parse(&raw.ok_or_else(ApiError::not_found)?)?))
         })
@@ -1002,8 +1035,8 @@ fn validate_schema_change(
 // One operation's definitions, shared by validation and snapshot construction.
 // Never retained across transactions, so schema changes need no cache invalidation.
 struct Definitions {
-    templates: HashMap<String, Template>,
-    components: HashMap<String, Component>,
+    templates: HashMap<TemplateId, Template>,
+    components: HashMap<ComponentId, Component>,
     /// Existing media that the pages' media fields reference. Missing IDs are absent.
     media: HashMap<media::MediaId, media::Media>,
 }
@@ -1055,10 +1088,8 @@ impl Definitions {
         if page.title.trim().is_empty() {
             return Err(ApiError::bad("title is required"));
         }
-        validate_slug(&page.slug)?;
         let mut aliases = HashSet::new();
         for alias in &page.aliases {
-            validate_slug(alias)?;
             if alias == &page.slug || !aliases.insert(alias) {
                 return Err(ApiError::bad(
                     "aliases must be unique and different from the page path",
@@ -1183,40 +1214,6 @@ fn validate_template(db: &mut impl Queryable, item: &Template) -> Result<()> {
     }
     Ok(())
 }
-fn is_descendant(path: &str, parent: &str) -> bool {
-    path != parent
-        && (parent == "/"
-            || path
-                .strip_prefix(parent)
-                .is_some_and(|rest| rest.starts_with('/')))
-}
-
-fn validate_slug(value: &str) -> Result<()> {
-    if value.len() > 2048 {
-        return Err(ApiError::bad("slug must be at most 2048 bytes"));
-    }
-    if value == "/" {
-        Ok(())
-    } else {
-        let segments: Vec<_> = value.strip_prefix('/').unwrap_or("").split('/').collect();
-        let valid = !segments.is_empty()
-            && segments.iter().all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            })
-            && !matches!(
-                segments[0].to_ascii_lowercase().as_str(),
-                "admin" | "api" | "health" | "assets" | "media"
-            );
-        if valid {
-            Ok(())
-        } else {
-            Err(ApiError::bad("slug must be a safe canonical path"))
-        }
-    }
-}
 fn validate_url(value: &str) -> Result<()> {
     if value
         .chars()
@@ -1243,14 +1240,18 @@ fn validate_url(value: &str) -> Result<()> {
         ))
     }
 }
-fn require_page(db: &mut impl Queryable, id: &str) -> Result<Page> {
-    load_one(db, "pages", id)
+fn require_page(db: &mut impl Queryable, id: &PageId) -> Result<Page> {
+    load_one(db, "pages", id.as_str())
 }
-fn require_template(db: &mut impl Queryable, id: &str) -> Result<Template> {
-    load_one(db, "templates", id)
+fn require_template(db: &mut impl Queryable, id: &TemplateId) -> Result<Template> {
+    load_one(db, "templates", id.as_str())
 }
-fn require_component(db: &mut impl Queryable, id: &str) -> Result<Component> {
-    load_one(db, "components", id)
+fn require_component(db: &mut impl Queryable, id: &ComponentId) -> Result<Component> {
+    load_one(db, "components", id.as_str())
+}
+/// Parses an ID from a URL path segment. An invalid ID names nothing, so it is a 404.
+fn path_id<T: std::str::FromStr>(raw: &str) -> Result<T> {
+    raw.parse().map_err(|_| ApiError::not_found())
 }
 fn load_one<T: serde::de::DeserializeOwned>(
     db: &mut impl Queryable,

@@ -5,8 +5,8 @@
 use mysql::prelude::Queryable;
 
 use crate::{
-    ApiError, Definitions, Page, Result, constraint_error, db::Locked, db_error, is_descendant,
-    json, load_all, require_page,
+    ApiError, Definitions, Page, PageId, Result, constraint_error, db::Locked, db_error, json,
+    load_all, require_page,
 };
 
 /// Validates `pages` against the stored definitions, then inserts or updates each
@@ -25,7 +25,7 @@ pub(crate) fn save_pages(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
     }
     // Temporary non-public paths avoid transient unique-key collisions. Snapshots remain untouched.
     for (page, slug) in pages.iter().zip(&stored) {
-        if slug.as_ref().is_some_and(|slug| slug != &page.slug) {
+        if slug.as_ref().is_some_and(|slug| page.slug != slug.as_str()) {
             db.exec_drop(
                 "UPDATE pages SET slug=? WHERE id=?",
                 (format!("__move_{}", page.id), &page.id),
@@ -46,7 +46,7 @@ pub(crate) fn save_pages(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
 }
 
 /// Records that the draft's `revision` is live. Leaves its content and paths alone.
-pub(crate) fn mark_published(db: &mut Locked<'_>, id: &str, revision: i64) -> Result<Page> {
+pub(crate) fn mark_published(db: &mut Locked<'_>, id: &PageId, revision: i64) -> Result<Page> {
     let mut draft = require_page(db, id)?;
     draft.published_revision = Some(revision);
     db.exec_drop("UPDATE pages SET data=? WHERE id=?", (json(&draft)?, id))
@@ -54,10 +54,10 @@ pub(crate) fn mark_published(db: &mut Locked<'_>, id: &str, revision: i64) -> Re
     Ok(draft)
 }
 
-pub(crate) fn delete_page(db: &mut Locked<'_>, id: &str) -> Result<()> {
+pub(crate) fn delete_page(db: &mut Locked<'_>, id: &PageId) -> Result<()> {
     let page = require_page(db, id)?;
     let pages: Vec<Page> = load_all(db, "pages")?;
-    if pages.iter().any(|p| is_descendant(&p.slug, &page.slug)) {
+    if pages.iter().any(|p| p.slug.is_descendant_of(&page.slug)) {
         return Err(ApiError::conflict("move or delete child pages first"));
     }
     db.exec_drop("DELETE FROM pages WHERE id=?", (id,))
@@ -100,7 +100,7 @@ fn claim_paths(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
             let owner: Option<String> = db
                 .exec_first("SELECT page_id FROM route_aliases WHERE slug=?", (path,))
                 .map_err(db_error)?;
-            if owner.is_some_and(|owner| owner != page.id) {
+            if owner.is_some_and(|owner| page.id != owner.as_str()) {
                 return Err(ApiError::conflict(
                     "a published alias already uses this path",
                 ));
@@ -110,7 +110,7 @@ fn claim_paths(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
             let owner: Option<String> = db
                 .exec_first("SELECT page_id FROM snapshots WHERE slug=?", (path,))
                 .map_err(db_error)?;
-            if owner.is_some_and(|owner| owner != page.id) {
+            if owner.is_some_and(|owner| page.id != owner.as_str()) {
                 return Err(ApiError::conflict(
                     "a published page already uses this alias path",
                 ));

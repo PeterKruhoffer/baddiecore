@@ -31,6 +31,12 @@ lint() {
     { fail "append each migration to MIGRATIONS in src/lib.rs on its own line, after its own // N: comment line, numbered in order"; status=1; }
   grep -rnE --exclude=admin-fixture.ts 'import \{[^}]*\btest\b[^}]*\} from "@playwright/test"' web/tests &&
     { fail "import test and expect from ./admin-fixture, which fails a test on console errors and Solid dev warnings"; status=1; }
+  grep -rnE 'serde\(transparent\)' src &&
+    { fail "derive serde with #[serde(try_from = \"String\", into = \"String\")] and parse in TryFrom, as src/ids.rs does; serde(transparent) lets any string bypass the type's parse"; status=1; }
+  grep -rnE '\b(Axum)?Path<\(?(PageId|TemplateId|ComponentId|MediaId|SitePath)\b' src &&
+    { fail "take path parameters as String and convert with path_id in src/lib.rs; a typed Path extractor answers a bad ID with axum's plain-text 400 instead of a JSON 404"; status=1; }
+  perl -0777 -ne 'print "$ARGV: imports axum Json\n" if /use axum::(\{[^;]*\bJson\b|(extract::)?Json\b)/ || /\baxum::(extract::)?Json</' $(find src -name '*.rs') | grep . &&
+    { fail "use crate::Json from src/lib.rs, not axum::Json; axum's rejection is a plain-text 422, not the contract's {error} 400"; status=1; }
   local route contract
   contract=$(sed 's/{[^}]*}/{}/g' CONTRACT.md)
   for route in $(cat src/*.rs | tr '\n' ' ' | grep -oE '\.route\( *"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | sed 's/{[^}]*}/{}/g' | sort -u); do

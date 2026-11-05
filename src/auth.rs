@@ -14,7 +14,7 @@ use argon2::{
     password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::{HeaderMap, StatusCode, header},
     middleware,
@@ -31,7 +31,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    ApiError, Result,
+    ApiError, Json, Result,
     db::{Database, Locked},
     db_error,
 };

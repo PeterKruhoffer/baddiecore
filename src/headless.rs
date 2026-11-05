@@ -1,7 +1,7 @@
 //! Server-to-server published content and external component registration.
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{Path, Request, State},
     http::{Method, StatusCode, header},
     middleware::{self, Next},
@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::{
-    ApiError, AppState, Component, Content, Renderer, Result, content, db_error, json, parse,
-    validate_component, validate_schema_change,
+    ApiError, AppState, Component, Content, Json, PageId, Renderer, Result, SitePath, TemplateId,
+    content, db_error, json, parse, validate_component, validate_schema_change,
 };
 
 #[derive(Clone, Default)]
@@ -104,10 +104,10 @@ async fn require_key(State(state): State<AppState>, request: Request, next: Next
 
 #[derive(Serialize)]
 struct PublishedPage {
-    id: String,
+    id: PageId,
     title: String,
-    slug: String,
-    template_id: String,
+    slug: SitePath,
+    template_id: TemplateId,
     revision: i64,
 }
 
@@ -142,7 +142,7 @@ async fn register_component(
     Path(id): Path<String>,
     Json(item): Json<Component>,
 ) -> Result<(StatusCode, Json<Component>)> {
-    if id != item.id
+    if item.id != id.as_str()
         || id.is_empty()
         || id.len() > 200
         || !id
