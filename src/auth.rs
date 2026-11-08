@@ -32,8 +32,8 @@ use uuid::Uuid;
 
 use crate::{
     ApiError, Json, Result,
+    db::db_error,
     db::{Database, Locked},
-    db_error,
 };
 
 /// Authenticated identity. Local organization membership grants CMS access.

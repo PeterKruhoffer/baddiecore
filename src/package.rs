@@ -20,7 +20,8 @@ use serde::Deserialize;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    ApiError, AppState, ComponentId, Json, Result, SitePath, auth, load_data,
+    ApiError, AppState, ComponentId, Json, Result, SitePath, auth,
+    db::load_data,
     serialization::{
         self, DefinitionPolicy, Items, MAX_FILE_SIZE, Merged, export_files, export_path,
     },

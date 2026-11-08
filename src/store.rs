@@ -5,8 +5,9 @@
 use mysql::prelude::Queryable;
 
 use crate::{
-    ApiError, Definitions, Page, PageId, Result, constraint_error, db::Locked, db_error, json,
-    load_all, require_page,
+    ApiError, Definitions, Page, PageId, Result,
+    db::Locked,
+    db::{constraint_error, db_error, json, load_all, require_page},
 };
 
 /// Validates `pages` against the stored definitions, then inserts or updates each

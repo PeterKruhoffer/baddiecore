@@ -15,7 +15,7 @@ lint() {
   grep -rnEi '\b(INSERT|REPLACE)\s+(IGNORE\s+)?INTO\s+\w+\s+VALUES\b' src tests &&
     { fail "list the columns in each INSERT, as in INSERT INTO pages(id,slug,data) VALUES(?,?,?); a positional INSERT breaks when a migration adds a column"; status=1; }
   grep -rnE '\b_\w*\s*:\s*&?[A-Za-z0-9_:]*Error\b' src &&
-    { fail "name the error parameter and log or return it, as db_error in src/lib.rs does; a _ parameter discards the cause"; status=1; }
+    { fail "name the error parameter and log or return it, as db_error in src/db.rs does; a _ parameter discards the cause"; status=1; }
   awk '
     /^const MIGRATIONS/ { inside = 1; next }
     inside && /^\];/ { exit }
@@ -27,8 +27,8 @@ lint() {
     }
     inside && /^ *"/ && ++count > last { print FILENAME ":" FNR ": migration " count " has no // " count ": marker"; bad = 1 }
     END { exit bad }
-  ' src/lib.rs ||
-    { fail "append each migration to MIGRATIONS in src/lib.rs on its own line, after its own // N: comment line, numbered in order"; status=1; }
+  ' src/db.rs ||
+    { fail "append each migration to MIGRATIONS in src/db.rs on its own line, after its own // N: comment line, numbered in order"; status=1; }
   grep -rnE --exclude=admin-fixture.ts 'import \{[^}]*\btest\b[^}]*\} from "@playwright/test"' web/tests &&
     { fail "import test and expect from ./admin-fixture, which fails a test on console errors and Solid dev warnings"; status=1; }
   grep -rnE 'serde\(transparent\)' src &&

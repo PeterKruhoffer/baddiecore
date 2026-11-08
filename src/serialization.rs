@@ -21,10 +21,11 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::{
-    ApiError, Block, Component, ComponentId, Definitions, Page, PageId, SitePath, StoredData,
-    Template, TemplateId,
+    ApiError, Block, Component, ComponentId, Definitions, Page, PageId, SitePath, Template,
+    TemplateId,
     db::{Locked, TransactionMode, transaction},
-    json, load_data, validate_component, validate_template,
+    db::{StoredData, json, load_data},
+    validate_component, validate_template,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -313,7 +314,7 @@ fn after(hashes: &Hashes, applied: &[Change], source: &Hashes) -> Hashes {
 fn load_base(tx: &mut Locked<'_>) -> crate::Result<Hashes> {
     let rows: Vec<(String, String)> = tx
         .query("SELECT path,hash FROM sync_base")
-        .map_err(crate::db_error)?;
+        .map_err(crate::db::db_error)?;
     Ok(rows
         .into_iter()
         .filter(|(path, _)| {
@@ -338,7 +339,7 @@ fn save_base(tx: &mut Locked<'_>, db: &Hashes, files: &Hashes, base: &Hashes) ->
             ),
             None => tx.exec_drop("DELETE FROM sync_base WHERE path=?", (path,)),
         }
-        .map_err(crate::db_error)?;
+        .map_err(crate::db::db_error)?;
     }
     Ok(())
 }
@@ -355,7 +356,7 @@ pub(crate) fn record_base(
             "INSERT INTO sync_base(path,hash) VALUES(?,?)",
             (export_path(group, id), digest(&bytes)),
         )
-        .map_err(crate::db_error)?;
+        .map_err(crate::db::db_error)?;
     }
     Ok(())
 }
@@ -519,7 +520,7 @@ pub fn pull(db: &Pool, directory: &Path, force: bool) -> Result<Sync, Error> {
         // A directory without a manifest shares no history with this database.
         if !known {
             tx.query_drop("DELETE FROM sync_base")
-                .map_err(crate::db_error)?;
+                .map_err(crate::db::db_error)?;
         }
         let items = database_items(&load_data(tx, false)?)?;
         let db_hashes = database_hashes(&items);
@@ -713,7 +714,7 @@ pub(crate) fn merge_items(
 fn exists(tx: &mut Locked<'_>, table: &str, id: &str) -> crate::Result<bool> {
     tx.exec_first::<String, _, _>(format!("SELECT id FROM {table} WHERE id=?"), (id,))
         .map(|row| row.is_some())
-        .map_err(crate::db_error)
+        .map_err(crate::db::db_error)
 }
 
 fn merge(
@@ -740,7 +741,7 @@ fn merge(
             "INSERT INTO components(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)",
             (&item.id, json(item)?),
         )
-        .map_err(crate::db_error)?;
+        .map_err(crate::db::db_error)?;
     }
     for item in &templates {
         if definitions == DefinitionPolicy::AddMissing {
@@ -754,9 +755,9 @@ fn merge(
             "INSERT INTO templates(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)",
             (&item.id, json(item)?),
         )
-        .map_err(crate::db_error)?;
+        .map_err(crate::db::db_error)?;
     }
-    let old: Vec<Page> = crate::load_all(tx, "pages")?;
+    let old: Vec<Page> = crate::db::load_all(tx, "pages")?;
     let old_by_id: HashMap<_, _> = old.iter().map(|p| (p.id.as_str(), p)).collect();
     let mut desired = Vec::new();
     let mut slugs = HashSet::new();
@@ -791,7 +792,7 @@ fn merge(
             crate::delete_definition(tx, group, id)?;
         }
     }
-    let pages = crate::load_all::<Page>(tx, "pages")?;
+    let pages = crate::db::load_all::<Page>(tx, "pages")?;
     let definitions = Definitions::load(tx, &pages)?;
     for page in &pages {
         definitions.validate(page)?;

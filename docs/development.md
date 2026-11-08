@@ -45,7 +45,7 @@ Add renderer names to the Rust `Renderer` enum, the frontend `RendererName` type
 
 ## Change the database schema
 
-Startup applies schema changes from the `MIGRATIONS` list in `src/lib.rs`. Statement N is version N; the `schema_migrations` table records which versions a database has applied, and each instance runs only the newer ones. The server and CLI apply migrations while holding the shared lock row, so overlapping deployments and CLI runs don't apply a statement twice. Versions 1–10 are the baseline schema. Databases created before versioning adopt the baseline on their next start.
+Startup applies schema changes from the `MIGRATIONS` list in `src/db.rs`. Statement N is version N; the `schema_migrations` table records which versions a database has applied, and each instance runs only the newer ones. The server and CLI apply migrations while holding the shared lock row, so overlapping deployments and CLI runs don't apply a statement twice. Versions 1–10 are the baseline schema. Databases created before versioning adopt the baseline on their next start.
 
 To change the schema, append one SQL statement to the end of `MIGRATIONS`:
 
