@@ -520,6 +520,16 @@ export function AdminApp() {
                                     await refresh();
                                     return result;
                                   }}
+                                  onUnpublish={async (value) => {
+                                    const result = await api.unpublish(value.id);
+                                    await refresh();
+                                    return result;
+                                  }}
+                                  onUnpublishBlock={async (value, blockId) => {
+                                    const result = await api.unpublishBlock(value, blockId);
+                                    await refresh();
+                                    return result;
+                                  }}
                                   onDelete={async (value) => {
                                     await api.deletePage(value.id);
                                     setPageId();

@@ -93,6 +93,9 @@ pub struct Block {
     pub component_id: ComponentId,
     pub region: String,
     pub fields: HashMap<String, String>,
+    /// Kept in the draft but left out of every publication. See workflow::current_content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Page {
@@ -422,6 +425,7 @@ fn seed(db: &Pool) -> Result<()> {
                         "Edit this starter page in the admin area.".into(),
                     ),
                 ]),
+                hidden: false,
             },
             Block {
                 id: "welcome-text".into(),
@@ -434,6 +438,7 @@ fn seed(db: &Pool) -> Result<()> {
                         "Add content, preview your draft, and publish when it is ready.".into(),
                     ),
                 ]),
+                hidden: false,
             },
         ];
         let page = Page {
@@ -457,6 +462,11 @@ pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
         .route("/pages", post(create_page))
         .route("/pages/{id}", put(update_page).delete(delete_page))
         .route("/pages/{id}/publish", post(publish_page))
+        .route("/pages/{id}/unpublish", post(unpublish_page))
+        .route(
+            "/pages/{id}/blocks/{block_id}/unpublish",
+            post(unpublish_block),
+        )
         .route(
             "/pages/{id}/schedule",
             put(schedule::schedule_page).delete(schedule::cancel),
@@ -725,6 +735,112 @@ async fn publish_page(
         })
         .await
 }
+/// Takes the page and its aliases off the live site and drops any pending
+/// schedule. The draft and child pages are untouched.
+async fn unpublish_page(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Page>> {
+    state
+        .run_as(editor, move |db, access| {
+            let id: PageId = path_id(&id)?;
+            let page = require_page(db, &id)?;
+            access.page(&page.slug)?;
+            let live: Option<String> = db
+                .exec_first("SELECT data FROM snapshots WHERE page_id=?", (&id,))
+                .map_err(db_error)?;
+            if let Some(live) = live {
+                access.page(&parse::<Content>(&live)?.page.slug)?;
+            }
+            for table in ["snapshots", "route_aliases", "scheduled_publications"] {
+                db.exec_drop(format!("DELETE FROM {table} WHERE page_id=?"), (&id,))
+                    .map_err(db_error)?;
+            }
+            Ok(Json(store::mark_published(db, &id, None)?))
+        })
+        .await
+}
+/// Hides one block in the draft and removes it from the live and scheduled snapshots.
+async fn unpublish_block(
+    State(state): State<AppState>,
+    Extension(editor): Extension<auth::Editor>,
+    AxumPath((id, block_id)): AxumPath<(String, String)>,
+    Json(input): Json<Revision>,
+) -> Result<Json<Page>> {
+    state
+        .run_as(editor, move |db, access| {
+            let id: PageId = path_id(&id)?;
+            let mut page = require_page(db, &id)?;
+            access.page(&page.slug)?;
+            let live: Option<String> = db
+                .exec_first("SELECT data FROM snapshots WHERE page_id=?", (&id,))
+                .map_err(db_error)?;
+            let live: Option<Content> = live.map(|data| parse(&data)).transpose()?;
+            if let Some(live) = &live {
+                access.page(&live.page.slug)?;
+            }
+            if page.revision != input.revision {
+                return Err(ApiError::conflict("stale revision"));
+            }
+            page.blocks
+                .iter_mut()
+                .find(|block| block.id == block_id)
+                .ok_or_else(ApiError::not_found)?
+                .hidden = true;
+            let in_sync = page.published_revision == Some(page.revision);
+            page.revision += 1;
+            // The live page still matches the draft minus hidden blocks, so keep it "Published".
+            if in_sync {
+                page.published_revision = Some(page.revision);
+            }
+            store::save_pages(db, std::slice::from_ref(&page))?;
+            if let Some(mut live) = live {
+                remove_block(&mut live, &block_id);
+                if in_sync {
+                    live.page.revision = page.revision;
+                    live.page.published_revision = Some(page.revision);
+                }
+                db.exec_drop(
+                    "UPDATE snapshots SET data=? WHERE page_id=?",
+                    (json(&live)?, &id),
+                )
+                .map_err(db_error)?;
+            }
+            let scheduled: Option<String> = db
+                .exec_first(
+                    "SELECT data FROM scheduled_publications WHERE page_id=?",
+                    (&id,),
+                )
+                .map_err(db_error)?;
+            if let Some(data) = scheduled {
+                let mut scheduled: Content = parse(&data)?;
+                remove_block(&mut scheduled, &block_id);
+                db.exec_drop(
+                    "UPDATE scheduled_publications SET data=? WHERE page_id=?",
+                    (json(&scheduled)?, &id),
+                )
+                .map_err(db_error)?;
+            }
+            Ok(Json(page))
+        })
+        .await
+}
+/// Removes a block from a snapshot along with the components and media only it used.
+fn remove_block(content: &mut Content, block_id: &str) {
+    content.page.blocks.retain(|block| block.id != block_id);
+    let components: HashMap<ComponentId, Component> = content
+        .components
+        .iter()
+        .filter(|c| content.page.blocks.iter().any(|b| b.component_id == c.id))
+        .map(|c| (c.id.clone(), c.clone()))
+        .collect();
+    let media: HashSet<media::MediaId> = media::referenced(&content.page, &components).collect();
+    content
+        .components
+        .retain(|c| components.contains_key(&c.id));
+    content.media.retain(|m| media.contains(&m.id));
+}
 /// Rejects a publication whose path or aliases another page's publication uses.
 fn check_published_paths(db: &mut impl Queryable, page: &Page) -> Result<()> {
     let occupied: Vec<String> = db
@@ -763,7 +879,7 @@ fn publish(db: &mut Locked<'_>, mut snapshot: Content) -> Result<Page> {
     snapshot.page.published_revision = Some(snapshot.page.revision);
     let page = &snapshot.page;
     check_published_paths(db, page)?;
-    let draft = store::mark_published(db, &page.id, page.revision)?;
+    let draft = store::mark_published(db, &page.id, Some(page.revision))?;
     // A newer publication supersedes any pending schedule for this page.
     db.exec_drop(
         "DELETE FROM scheduled_publications WHERE page_id=?",

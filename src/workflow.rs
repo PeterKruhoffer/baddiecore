@@ -286,7 +286,8 @@ pub(super) struct Submission {
     publish_at: Option<i64>,
 }
 
-pub(super) fn current_content(db: &mut impl Queryable, page: Page) -> Result<Content> {
+pub(super) fn current_content(db: &mut impl Queryable, mut page: Page) -> Result<Content> {
+    page.blocks.retain(|block| !block.hidden);
     let mut definitions = Definitions::load(db, std::slice::from_ref(&page))?;
     definitions.validate(&page)?;
     let template = definitions

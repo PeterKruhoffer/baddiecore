@@ -61,6 +61,8 @@ export interface Block {
   component_id: string;
   region: string;
   fields: Record<string, string>;
+  /** Kept in the draft but left out of every publication. */
+  hidden?: boolean;
 }
 export interface Page {
   id: string;

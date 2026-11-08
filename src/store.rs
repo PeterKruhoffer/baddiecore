@@ -45,10 +45,14 @@ pub(crate) fn save_pages(db: &mut Locked<'_>, pages: &[Page]) -> Result<()> {
     claim_paths(db, pages)
 }
 
-/// Records that the draft's `revision` is live. Leaves its content and paths alone.
-pub(crate) fn mark_published(db: &mut Locked<'_>, id: &PageId, revision: i64) -> Result<Page> {
+/// Records which draft revision is live, or `None` once unpublished. Leaves its content and paths alone.
+pub(crate) fn mark_published(
+    db: &mut Locked<'_>,
+    id: &PageId,
+    revision: Option<i64>,
+) -> Result<Page> {
     let mut draft = require_page(db, id)?;
-    draft.published_revision = Some(revision);
+    draft.published_revision = revision;
     db.exec_drop("UPDATE pages SET data=? WHERE id=?", (json(&draft)?, id))
         .map_err(db_error)?;
     Ok(draft)

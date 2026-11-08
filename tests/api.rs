@@ -4683,3 +4683,188 @@ async fn editing_alt_text_does_not_invalidate_a_pending_review() {
 fn path(value: &str) -> SitePath {
     value.parse().unwrap()
 }
+
+#[tokio::test]
+async fn unpublishing_a_page_takes_it_and_its_aliases_offline_and_keeps_the_draft() {
+    let app = setup().await;
+    members(&app).await;
+    let scoped = member_app(&app);
+    let mut page = create_test_page(&app, "/news/story").await;
+    let url = format!("/api/admin/pages/{}", page.id);
+    page.aliases = vec![path("/news/offer")];
+    page = read(call(&app.app, "PUT", &url, Some(&app.cookie), Some(&page)).await).await;
+    let revision = json!({"revision": page.revision});
+    for (method, path) in [("POST", "publish"), ("PUT", "schedule")] {
+        let body = if path == "schedule" {
+            json!({"revision": page.revision, "publish_at": unix_now() + 600})
+        } else {
+            revision.clone()
+        };
+        let response = call(
+            &app.app,
+            method,
+            &format!("{url}/{path}"),
+            Some(&app.cookie),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let outside = create_test_page(&app, "/elsewhere").await;
+    assert_eq!(
+        call(
+            &scoped,
+            "POST",
+            &format!("/api/admin/pages/{}/unpublish", outside.id),
+            Some("editor"),
+            None::<&Value>,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    for _ in 0..2 {
+        let response = call(
+            &scoped,
+            "POST",
+            &format!("{url}/unpublish"),
+            Some("editor"),
+            None::<&Value>,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let unpublished: Page = read(response).await;
+        assert_eq!(
+            (unpublished.revision, unpublished.published_revision),
+            (page.revision, None)
+        );
+        assert_eq!(unpublished.aliases, page.aliases);
+    }
+    assert_eq!(
+        call(
+            &app.app,
+            "GET",
+            "/api/content?slug=/news/story",
+            None,
+            None::<&Value>
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_ne!(
+        call(&app.app, "GET", "/news/offer", None, None::<&Value>)
+            .await
+            .status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert!(bootstrap(&app).await.schedules.is_empty());
+}
+
+#[tokio::test]
+async fn unpublishing_a_block_removes_it_from_the_live_page_and_later_publications() {
+    let app = setup().await;
+    let publish = |revision: i64| {
+        let app = &app;
+        async move {
+            call(
+                &app.app,
+                "POST",
+                "/api/admin/pages/home/publish",
+                Some(&app.cookie),
+                Some(&json!({"revision": revision})),
+            )
+            .await
+            .status()
+        }
+    };
+    let unpublish = |block: &'static str, revision: i64| {
+        let app = &app;
+        async move {
+            call(
+                &app.app,
+                "POST",
+                &format!("/api/admin/pages/home/blocks/{block}/unpublish"),
+                Some(&app.cookie),
+                Some(&json!({"revision": revision})),
+            )
+            .await
+        }
+    };
+    let live = || async {
+        read::<Content>(call(&app.app, "GET", "/api/content?slug=/", None, None::<&Value>).await)
+            .await
+    };
+    assert_eq!(publish(1).await, StatusCode::OK);
+    let scheduled = call(
+        &app.app,
+        "PUT",
+        "/api/admin/pages/home/schedule",
+        Some(&app.cookie),
+        Some(&json!({"revision": 1, "publish_at": unix_now() + 600})),
+    )
+    .await;
+    assert_eq!(scheduled.status(), StatusCode::OK);
+
+    let response = unpublish("welcome-hero", 1).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut home: Page = read(response).await;
+    assert_eq!((home.revision, home.published_revision), (2, Some(2)));
+    let hero = home.blocks.iter().find(|b| b.id == "welcome-hero").unwrap();
+    assert!(hero.hidden);
+    let content = live().await;
+    let ids: Vec<_> = content.page.blocks.iter().map(|b| b.id.as_str()).collect();
+    assert_eq!(ids, ["welcome-text"]);
+    assert_eq!(content.page.published_revision, Some(2));
+    let components: Vec<_> = content.components.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(components, ["text"]);
+    let scheduled: String = Pool::new(Opts::from_url(&app.db.url).unwrap())
+        .unwrap()
+        .get_conn()
+        .unwrap()
+        .query_first("SELECT data FROM scheduled_publications WHERE page_id='home'")
+        .unwrap()
+        .unwrap();
+    let scheduled: Content = serde_json::from_str(&scheduled).unwrap();
+    assert!(scheduled.page.blocks.iter().all(|b| b.id != "welcome-hero"));
+    assert!(scheduled.components.iter().all(|c| c.id != "hero"));
+
+    assert_eq!(
+        unpublish("welcome-text", 1).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        unpublish("missing", 2).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    home.title = "Edited".into();
+    home = read(
+        call(
+            &app.app,
+            "PUT",
+            "/api/admin/pages/home",
+            Some(&app.cookie),
+            Some(&home),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(publish(home.revision).await, StatusCode::OK);
+    let content = live().await;
+    assert_eq!(content.page.title, "Edited");
+    assert!(content.page.blocks.iter().all(|b| b.id != "welcome-hero"));
+    let draft = bootstrap(&app)
+        .await
+        .pages
+        .into_iter()
+        .find(|p| p.id == "home")
+        .unwrap();
+    assert!(
+        draft
+            .blocks
+            .iter()
+            .any(|b| b.id == "welcome-hero" && b.hidden)
+    );
+}

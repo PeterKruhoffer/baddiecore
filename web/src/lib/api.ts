@@ -96,6 +96,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision: page.revision }),
     }),
+  unpublish: (id: string) =>
+    request<Page>(`/api/admin/pages/${encodeURIComponent(id)}/unpublish`, { method: "POST" }),
+  unpublishBlock: (page: Page, blockId: string) =>
+    request<Page>(
+      `/api/admin/pages/${encodeURIComponent(page.id)}/blocks/${encodeURIComponent(blockId)}/unpublish`,
+      { method: "POST", body: JSON.stringify({ revision: page.revision }) },
+    ),
   schedule: (page: Page, publish_at: number) =>
     request<Schedule>(`/api/admin/pages/${encodeURIComponent(page.id)}/schedule`, {
       method: "PUT",

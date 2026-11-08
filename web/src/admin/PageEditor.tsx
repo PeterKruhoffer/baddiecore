@@ -141,6 +141,15 @@ const styles = stylex.create({
     outlineOffset: -2,
   },
   previewSelected: { outlineColor: "#2563eb" },
+  previewHidden: { opacity: 0.5 },
+  hiddenLabel: {
+    margin: 0,
+    padding: "4px 8px",
+    fontSize: 12,
+    backgroundColor: "#fef3c7",
+    color: "#92400e",
+  },
+  blockStatus: { display: "flex", alignItems: "center", gap: 6, padding: "6px 8px" },
   pathHelp: { fontSize: 12, lineHeight: 1.45, color: "#64748b" },
   pathPreview: { overflowWrap: "anywhere", color: "#2563eb" },
   when: { borderWidth: 0, padding: 0, margin: "0 0 16px", display: "grid", gap: 8 },
@@ -163,6 +172,8 @@ type Props = {
   canCancelSchedule: boolean;
   onSave: (p: Page) => Promise<Page>;
   onPublish: (p: Page) => Promise<Page>;
+  onUnpublish: (p: Page) => Promise<Page>;
+  onUnpublishBlock: (p: Page, blockId: string) => Promise<Page>;
   onSchedule: (p: Page, publishAt: number) => Promise<Page>;
   onCancelSchedule: (p: Page) => Promise<void>;
   onSubmit: (p: Page, publishAt?: number) => Promise<Page>;
@@ -188,6 +199,7 @@ export function PageEditor(p: Props) {
   const [later, setLater] = createSignal(false);
   const [publishAt, setPublishAt] = createSignal("");
   let publishDialog!: HTMLDialogElement;
+  let unpublishDialog!: HTMLDialogElement;
   function openDialog(value: "publish" | "submit") {
     setMode(value);
     setLater(false);
@@ -289,6 +301,26 @@ export function PageEditor(p: Props) {
       setBusy("");
     }
   }
+  async function unpublish() {
+    setBusy("unpublish");
+    setError("");
+    try {
+      const result = await p.onUnpublish(draft());
+      // Unpublishing never changes draft content, so unsaved edits stay in place.
+      setDraft({ ...draft(), published_revision: result.published_revision });
+      unpublishDialog.close();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setBusy("");
+    }
+  }
+  function showBlock(id: string) {
+    update({
+      ...draft(),
+      blocks: draft().blocks.map((b) => (b.id === id ? { ...b, hidden: false } : b)),
+    });
+  }
   async function deletePage() {
     if (!confirm(`Delete ${draft().title}?`)) return;
     setBusy("delete");
@@ -345,6 +377,18 @@ export function PageEditor(p: Props) {
           >
             {busy() === "submit" ? "Submitting…" : "Submit for review"}
           </button>
+          <Show when={draft().published_revision != null}>
+            <button
+              {...stylex.attrs(common.button)}
+              disabled={!!busy()}
+              onClick={() => {
+                setError("");
+                unpublishDialog.showModal();
+              }}
+            >
+              {busy() === "unpublish" ? "Unpublishing…" : "Unpublish"}
+            </button>
+          </Show>
           <Show when={p.isAdmin}>
             <button
               {...stylex.attrs(common.button, common.primary)}
@@ -586,6 +630,36 @@ export function PageEditor(p: Props) {
                             ↓
                           </button>
                         </div>
+                        <Show when={block().hidden}>
+                          <div {...stylex.attrs(styles.blockStatus)}>
+                            <span {...stylex.attrs(common.badge)}>Hidden</span>
+                            <button
+                              {...stylex.attrs(common.button)}
+                              type="button"
+                              disabled={!!busy()}
+                              aria-label={`Show ${def?.name} on live site`}
+                              onClick={() => showBlock(id)}
+                            >
+                              Show on live site
+                            </button>
+                          </div>
+                        </Show>
+                        <Show when={!block().hidden && draft().published_revision != null}>
+                          <div {...stylex.attrs(styles.blockStatus)}>
+                            <button
+                              {...stylex.attrs(common.button)}
+                              type="button"
+                              disabled={!!busy() || dirty()}
+                              title={dirty() ? "Save the draft first" : undefined}
+                              aria-label={`Unpublish ${def?.name}`}
+                              onClick={() =>
+                                act("unpublish-block", () => p.onUnpublishBlock(draft(), id))
+                              }
+                            >
+                              Unpublish block
+                            </button>
+                          </div>
+                        </Show>
                         <Show when={selected() === id}>
                           <div {...stylex.attrs(styles.fields)}>
                             <For each={def?.fields}>
@@ -745,9 +819,13 @@ export function PageEditor(p: Props) {
                         {...stylex.attrs(
                           styles.preview,
                           selected() === block.id && styles.previewSelected,
+                          block.hidden && styles.previewHidden,
                         )}
                         onClick={() => setSelected(block.id)}
                       >
+                        <Show when={block.hidden}>
+                          <p {...stylex.attrs(styles.hiddenLabel)}>Hidden from the live site</p>
+                        </Show>
                         <BlockRenderer block={block} definition={d()} media={p.media} />
                       </div>
                     )}
@@ -891,6 +969,47 @@ export function PageEditor(p: Props) {
                   : dirty()
                     ? "Save and publish"
                     : "Publish page"}
+          </button>
+        </div>
+      </dialog>
+      <dialog
+        ref={(element) => {
+          unpublishDialog = element;
+        }}
+        {...stylex.attrs(common.dialog)}
+        aria-labelledby="unpublish-heading"
+        onCancel={(e) => {
+          if (busy()) e.preventDefault();
+        }}
+      >
+        <h2 id="unpublish-heading" {...stylex.attrs(common.heading)}>
+          Unpublish {draft().title}?
+        </h2>
+        <div {...stylex.attrs(common.notice)}>
+          <p>
+            {draft().title} and its aliases go offline now. Any scheduled publication is cancelled.
+          </p>
+          <p>The draft is kept, so you can publish it again later. Child pages stay published.</p>
+        </div>
+        <Show when={error()}>
+          <p {...stylex.attrs(common.error)} role="alert">
+            {error()}
+          </p>
+        </Show>
+        <div {...stylex.attrs(styles.actions, styles.review)}>
+          <button
+            {...stylex.attrs(common.button)}
+            disabled={!!busy()}
+            onClick={() => unpublishDialog.close()}
+          >
+            Cancel
+          </button>
+          <button
+            {...stylex.attrs(common.button, common.danger)}
+            disabled={!!busy()}
+            onClick={() => void unpublish()}
+          >
+            {busy() ? "Working…" : "Unpublish page"}
           </button>
         </div>
       </dialog>

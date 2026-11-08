@@ -46,6 +46,17 @@ async function openWorkspace(page: BrowserPage, data: Bootstrap = bootstrap()) {
       data.pages[0].published_revision = body.revision;
       return route.fulfill({ json: data.pages[0] });
     }
+    if (url === "/api/admin/pages/home/unpublish") {
+      data.pages[0].published_revision = null;
+      return route.fulfill({ json: data.pages[0] });
+    }
+    const hidden = /^\/api\/admin\/pages\/home\/blocks\/([^/]+)\/unpublish$/.exec(url)?.[1];
+    if (hidden) {
+      const home = data.pages[0];
+      home.blocks = home.blocks.map((b) => (b.id === hidden ? { ...b, hidden: true } : b));
+      home.revision += 1;
+      return route.fulfill({ json: home });
+    }
     if (url === "/api/admin/pages/home/schedule" && req.method() === "PUT") {
       data.schedules = [
         { page_id: "home", ...body, scheduled_by: "test-user", error: null } as Schedule,
@@ -189,6 +200,35 @@ test("confirmation cancels without writes; publishing saves first and uses the n
   expect(state.writes[1].body).toEqual({ revision: 13 });
   expect(state.data.pages[1].published_revision).toBeNull();
   await expect(page.getByText("Saved draft · Revision 13", { exact: true })).toBeVisible();
+});
+
+test("editors hide a block from the live site and unpublish a page without losing unsaved edits", async ({
+  page,
+}) => {
+  const state = await openWorkspace(page);
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Unpublish Hero", exact: true }).click();
+  await expect(page.getByText("Hidden", { exact: true })).toBeVisible();
+  await expect(page.getByText("Hidden from the live site", { exact: true })).toBeVisible();
+  await capture(page, "hidden-block");
+  expect(state.writes.at(-1)).toEqual({
+    url: `/api/admin/pages/home/blocks/${state.data.pages[0].blocks[0].id}/unpublish`,
+    body: { revision: 12 },
+  });
+
+  await page.getByRole("textbox", { name: "Page title" }).fill("Unsaved title");
+  await page.getByRole("button", { name: "Unpublish", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Child pages stay published");
+  await capture(page, "unpublish-page");
+  await dialog.getByRole("button", { name: "Unpublish page", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Unpublish", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Page title" })).toHaveValue("Unsaved title");
+  await expect(page.getByText("Unsaved changes", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Show Hero on live site", exact: true }).click();
+  await expect(page.getByText("Hidden from the live site", { exact: true })).toHaveCount(0);
 });
 
 test("save conflicts prevent publication and retain edits; a later publish failure keeps the saved draft and dialog", async ({

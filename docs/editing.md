@@ -79,6 +79,12 @@ Editors choose a time in **Submit for review**. Reviewers see the requested time
 
 Scheduled pages show their time in the page tree and at the top of the editor. Administrators and reviewers can cancel a schedule there. Publishing a page now replaces its schedule, and each page has at most one. The server checks for due pages every 15 seconds, so publication can be up to 15 seconds late, or later if the server was stopped at the time; it then catches up on start. If publication fails, for example because another page was published at the same path, or another page's draft took one of its paths or aliases meanwhile, the editor shows the reason and the schedule waits until you dismiss it or schedule again.
 
+## Unpublishing
+
+Any member who can edit a page can take it offline. Choose **Unpublish** in the page editor and confirm. The page and its aliases stop working at once, and any scheduled publication is cancelled. The draft stays, including unsaved edits, so you can publish it again later. Child pages stay published.
+
+To take one block off the live page, save the draft, then choose **Unpublish block** on that block. The block disappears from the live site at once and is marked **Hidden** in the editor, where it stays editable and shows dimmed in the preview. Hidden blocks are left out of every later publication and review. To bring a block back, choose **Show on live site**, save, then publish or submit for review.
+
 ## Move content pages between installations
 
 Content pages don't go into Git. To move pages between installations, for example from a local instance to test or production, use content packages in `/admin`:

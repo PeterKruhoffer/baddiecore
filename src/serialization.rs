@@ -103,6 +103,8 @@ struct BlockDraft {
     component_id: ComponentId,
     region: String,
     fields: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
 }
 
 impl From<&Page> for PageDraft {
@@ -125,6 +127,7 @@ impl From<&Page> for PageDraft {
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
+                    hidden: b.hidden,
                 })
                 .collect(),
         }
@@ -147,6 +150,7 @@ impl PageDraft {
                     component_id: b.component_id,
                     region: b.region,
                     fields: b.fields.into_iter().collect(),
+                    hidden: b.hidden,
                 })
                 .collect(),
             revision,
@@ -991,6 +995,7 @@ mod tests {
                 component_id: "c".parse().unwrap(),
                 region: "r".into(),
                 fields: BTreeMap::from([("z".into(), "1".into()), ("a".into(), "2".into())]),
+                hidden: false,
             }],
         };
         let text = String::from_utf8(yaml("page", &draft).unwrap()).unwrap();
