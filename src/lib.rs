@@ -27,6 +27,7 @@ use db::{
     migrate, parse, require_component, require_page, require_template,
 };
 pub use ids::{ComponentId, PageId, SitePath, TemplateId};
+use seed::seed;
 
 pub mod auth;
 mod db;
@@ -36,6 +37,7 @@ pub mod media;
 mod package;
 pub mod richtext;
 pub mod schedule;
+mod seed;
 pub mod serialization;
 mod store;
 pub mod workflow;
@@ -257,143 +259,6 @@ pub fn reset_admin(
         workflow::reset_admin(tx, id, &hash)
     })
     .map_err(|e| e.1)
-}
-
-fn seed(db: &Pool) -> Result<()> {
-    db::transaction(db, TransactionMode::Commit, |tx| {
-        let count: i64 = tx
-            .query_first("SELECT count(*) FROM components")
-            .map_err(db_error)?
-            .unwrap();
-        if count != 0 {
-            return Ok(());
-        }
-        let specs = [
-            (
-                "hero",
-                "Hero",
-                Renderer::Hero,
-                vec![
-                    ("eyebrow", false, FieldKind::Text),
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Richtext),
-                    ("button_label", false, FieldKind::Text),
-                    ("button_url", false, FieldKind::Url),
-                    ("image", false, FieldKind::Media),
-                ],
-            ),
-            (
-                "text",
-                "Text",
-                Renderer::Text,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Richtext),
-                ],
-            ),
-            (
-                "callout",
-                "Callout",
-                Renderer::Callout,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Richtext),
-                    ("button_label", false, FieldKind::Text),
-                    ("button_url", false, FieldKind::Url),
-                ],
-            ),
-            (
-                "cards",
-                "Cards",
-                Renderer::Cards,
-                vec![
-                    ("title", true, FieldKind::Text),
-                    ("body", false, FieldKind::Textarea),
-                ],
-            ),
-        ];
-        let mut components = Vec::new();
-        for (id, name, renderer, fields) in specs {
-            let component = Component {
-                id: id.parse().expect("seed component id"),
-                name: name.into(),
-                description: format!("{name} content block"),
-                renderer,
-                fields: fields
-                    .into_iter()
-                    .map(|(name, required, kind)| Field {
-                        name: name.into(),
-                        label: title_case(name),
-                        kind,
-                        required,
-                        richtext: None,
-                    })
-                    .collect(),
-            };
-            tx.exec_drop(
-                "INSERT INTO components(id,data) VALUES(?,?)",
-                (&component.id, json(&component)?),
-            )
-            .map_err(db_error)?;
-            components.push(component);
-        }
-        let template = Template {
-            id: "homepage".parse().expect("seed template id"),
-            name: "Homepage".into(),
-            description: "A flexible homepage".into(),
-            regions: vec![Region {
-                name: "main".into(),
-                allowed_components: components.iter().map(|c| c.id.clone()).collect(),
-                max_components: 20,
-            }],
-        };
-        tx.exec_drop(
-            "INSERT INTO templates(id,data) VALUES(?,?)",
-            (&template.id, json(&template)?),
-        )
-        .map_err(db_error)?;
-        let blocks = vec![
-            Block {
-                id: "welcome-hero".into(),
-                component_id: "hero".parse().expect("seed component id"),
-                region: "main".into(),
-                fields: HashMap::from([
-                    ("eyebrow".into(), "Welcome".into()),
-                    ("title".into(), "Build your site".into()),
-                    (
-                        "body".into(),
-                        "Edit this starter page in the admin area.".into(),
-                    ),
-                ]),
-                hidden: false,
-            },
-            Block {
-                id: "welcome-text".into(),
-                component_id: "text".parse().expect("seed component id"),
-                region: "main".into(),
-                fields: HashMap::from([
-                    ("title".into(), "Start publishing".into()),
-                    (
-                        "body".into(),
-                        "Add content, preview your draft, and publish when it is ready.".into(),
-                    ),
-                ]),
-                hidden: false,
-            },
-        ];
-        let page = Page {
-            id: "home".parse().expect("seed page id"),
-            title: "Home".into(),
-            slug: SitePath::root(),
-            aliases: vec![],
-            template_id: template.id.clone(),
-            blocks,
-            revision: 1,
-            published_revision: None,
-        };
-        store::save_pages(tx, &[page])?;
-        serialization::record_base(tx, &components, &[template])
-    })
 }
 
 pub fn router(state: AppState, static_dir: impl AsRef<Path>) -> Router {
@@ -1279,12 +1144,4 @@ fn validate_url(value: &str) -> Result<()> {
 /// Parses an ID from a URL path segment. An invalid ID names nothing, so it is a 404.
 fn path_id<T: std::str::FromStr>(raw: &str) -> Result<T> {
     raw.parse().map_err(|_| ApiError::not_found())
-}
-fn title_case(value: &str) -> String {
-    let mut chars = value.chars();
-    chars
-        .next()
-        .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
-        .unwrap_or_default()
-        .replace('_', " ")
 }
