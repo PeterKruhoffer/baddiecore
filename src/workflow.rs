@@ -14,7 +14,9 @@ use crate::{
     db::Locked,
     db::{db_error, json, load_one, require_page},
     definitions::Definitions,
-    media, path_id, publish, schedule,
+    media,
+    pages::publish,
+    path_id, schedule,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

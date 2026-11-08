@@ -12,10 +12,11 @@ use mysql::prelude::Queryable;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiError, AppState, Content, Json, PageId, Result, auth, check_published_paths,
+    ApiError, AppState, Content, Json, PageId, Result, auth,
     db::Locked,
     db::{db_error, json, parse, require_page},
-    path_id, publish, workflow,
+    pages::{check_published_paths, publish},
+    path_id, workflow,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
