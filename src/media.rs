@@ -1,10 +1,22 @@
 //! Uploaded images. Bytes live in MySQL beside their metadata and never change
 //! after upload, so public responses are cacheable forever.
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use axum::body::Bytes;
+use axum::{
+    Extension,
+    body::Bytes,
+    extract::{Path as AxumPath, Query, State},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use mysql::prelude::Queryable;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use super::*;
+use crate::{
+    ApiError, AppState, Component, ComponentId, Content, FieldKind, Json, Page, Result, auth,
+    db_error, json, load_all, parse, schedule, workflow,
+};
 
 /// Largest accepted upload. The upload route has its own body limit.
 pub(crate) const MAX_BYTES: usize = 10 * 1024 * 1024;

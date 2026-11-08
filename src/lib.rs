@@ -21,7 +21,6 @@ use tower_http::{
     limit::RequestBodyLimitLayer,
     services::{ServeDir, ServeFile},
 };
-use uuid::Uuid;
 
 use db::{Database, Locked, TransactionMode};
 pub use ids::{ComponentId, PageId, SitePath, TemplateId};
