@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Component, Content, Definitions, Json, Page, PageId, Result, SitePath,
-    auth,
+    ApiError, AppState, Component, Content, Json, Page, PageId, Result, SitePath, auth,
     db::Locked,
     db::{db_error, json, load_one, require_page},
+    definitions::Definitions,
     media, path_id, publish, schedule,
 };
 

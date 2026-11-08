@@ -17,7 +17,7 @@ use crate::{
     ApiError, AppState, Component, Content, Json, PageId, Renderer, Result, SitePath, TemplateId,
     content,
     db::{db_error, json, parse},
-    validate_component, validate_schema_change,
+    definitions::{validate_component, validate_schema_change},
 };
 
 #[derive(Clone, Default)]

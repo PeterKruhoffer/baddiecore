@@ -21,11 +21,10 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::{
-    ApiError, Block, Component, ComponentId, Definitions, Page, PageId, SitePath, Template,
-    TemplateId,
+    ApiError, Block, Component, ComponentId, Page, PageId, SitePath, Template, TemplateId,
     db::{Locked, TransactionMode, transaction},
     db::{StoredData, json, load_data},
-    validate_component, validate_template,
+    definitions::{Definitions, validate_component, validate_template},
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -789,7 +788,7 @@ fn merge(
     // Delete definitions last, once pages and templates have moved off them.
     for group in ["templates", "components"] {
         for (_, id) in deleted.iter().filter(|(g, _)| *g == group) {
-            crate::delete_definition(tx, group, id)?;
+            crate::definitions::delete_definition(tx, group, id)?;
         }
     }
     let pages = crate::db::load_all::<Page>(tx, "pages")?;
