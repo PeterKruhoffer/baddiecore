@@ -14,7 +14,7 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric, 3-6 concrete gradeable criteria for what success looks like on *this* task. It is the picker's tool in Phase D. Candidates only see the task.
-3. Pick the runners. Use the `arena runners` line in `<pstack>/models.md`, one runner per entry. If `create_thread` rejects an entry's mode, run that seat as `thread` and say so. Spawn more runners when the arena covers multiple design directions. Use the same model N times when the work is generation-bound rather than judgment-sensitive. Spawn each per the Subagents section of the **poteto-mode** skill.
+3. Pick the runners from the `arena runners` line in `<pstack>/models.md`, one runner per entry. If `create_thread` rejects an entry's mode, run that seat as `thread` and say so. Spawn more for multiple design directions, and repeat one model when the work is generation-bound, not judgment-sensitive. Spawn each per the Subagents section of the **poteto-mode** skill.
 4. Give each candidate its own output location (a git worktree where possible, its own branch for an orb thread, otherwise `/tmp/arena-<slug>/candidate-<n>/`), per the **separate-before-serializing-shared-state** principle skill.
 
 ## Phase B: Fan out
@@ -25,7 +25,7 @@ If a candidate produces no output, proceed with N-1 and note the dropout.
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, choose one model from the `arena cross-judge pool` line in `<pstack>/models.md`. Spawn one judge subagent whose brief says "do not edit files". The judge is never from the parent's family, meaning this thread's own model. Try only the entries from another family, in pool order. A `thread` entry is the parent's family, so it never judges. If `create_thread` rejects an entry, move to the next entry. If no entry from another family runs, skip the judge, pick the base alone in Phase D, and say so. If you do not know the parent's model, try the pool's entries in pool order and say that the family check did not run. The judge sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with your reading in Phase D. Don't spawn it while candidates are still writing.
+After all Phase B candidates complete, spawn one judge from the `arena cross-judge pool` line in `<pstack>/models.md`, with a brief that says "do not edit files". The judge is never from this thread's family, so use the first entry from the other family. A `thread` entry is this thread's family. If you do not know this thread's model, use the first entry and say that the family check did not run. If `create_thread` rejects an entry, use the next such entry, or skip the judge, and say so. While you read in Phase D, the judge scores each candidate, by path label, on each rubric criterion and recommends a base.
 
 ## Phase D: Pick a base
 

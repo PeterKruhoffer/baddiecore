@@ -15,11 +15,11 @@ The values are `thread`, `claude`, and `openai`. `models.md` defines the agent m
 
 ### 2. Load current state
 
-Read `../../models.md`. Its role lines are the current choices. A line whose role is not in the block in step 4 is from a retired role. Drop it.
+Read `../../models.md`. Its role lines are the current choices. A line whose role is not in the block in step 4, such as `hardest tasks`, `architect runners`, `reflect tooling`, or `why investigators`, is from a retired role. Drop it.
 
 ### 3. Show the roles and confirm
 
-Show every role with its value, and mark any value whose subscription is missing as needing a choice. Also list each line step 2 dropped. Ask with `ask_user_choice` whether to accept as-is or change specific roles. Explain the tradeoff once. `thread` is the cheapest and sees uncommitted work. A family other than the thread's starts an orb thread, which bills to Amp credits, sees only pushed work, and is the only way to get a second model family. For panel roles (`arena runners`, `architect runners`, `interrogate reviewers`) the value is a list, and one seat runs per entry, so the list length sets the count. `arena cross-judge pool` is also a list, but Arena runs one judge. It tries entries from a family other than the parent's, in list order, so order it by preference. `thread` never judges. `swarm workers` is the default for every worker unless a race or comparison assigns another mode per arm.
+Show every role with its value, and mark any value whose subscription is missing as needing a choice. Also list each line step 2 dropped. Ask with `ask_user_choice` whether to accept as-is or change specific roles. Explain the tradeoff once. `thread` is the cheapest and sees uncommitted work. A family other than the thread's starts an orb thread, which bills to Amp credits, sees only pushed work, and is the only way to get a second model family. For panel roles (`arena runners`, `interrogate reviewers`) the value is a list, and one seat runs per entry, so the list length sets the count. `arena cross-judge pool` is also a list, but Arena runs one judge. It tries entries from a family other than the parent's, in list order, so order it by preference. `thread` never judges. `swarm workers` is the default for every worker unless a race or comparison assigns another mode per arm.
 
 ### 4. Write the file
 
@@ -31,17 +31,9 @@ bug-fix
 perf-issue
 hillclimb
 judgment and prose
-hardest tasks
-how explorer
-how explainer
-why investigators
-why synthesizer
-reflect tooling
-reflect judgment, divergent, synthesizer
 arena runners
 arena cross-judge pool
 swarm workers
-architect runners
 interrogate reviewers
 ```
 

@@ -64,7 +64,7 @@ Correct the log, not the story. The audit never edits or removes a row, even an 
 
 ## Cross-model review of the trail
 
-Before handing back, spawn a subagent on a different model family from the one that did the work. Self-review is not a substitute. The subagent reads the audit trail and the run's thread, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky. Run it as an orb thread on an agent mode from another family named in `<pstack>/models.md`, per the Subagents section of the **poteto-mode** skill. If `create_thread` rejects the mode, fall back to `thread` and say so.
+Before handing back, spawn a subagent on the other model family from the one that did the work. Self-review is not a substitute. The subagent reads the audit trail and the run's thread, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky. Run it as an orb thread on the other family's agent mode in `<pstack>/models.md`, per the Subagents section of the **poteto-mode** skill. If `create_thread` rejects the mode, fall back to `thread` and say so.
 
 - Decisions logged with weak or absent evidence.
 - Verification steps skipped or claimed without proof in the thread.
