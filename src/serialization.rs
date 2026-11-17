@@ -24,7 +24,9 @@ use crate::{
     ApiError, Block, Component, ComponentId, Page, PageId, SitePath, Template, TemplateId,
     db::{Locked, TransactionMode, transaction},
     db::{StoredData, json, load_data},
-    definitions::{Definitions, validate_component, validate_template},
+    definitions::{
+        DefinitionKind, Definitions, delete_definition, validate_component, validate_template,
+    },
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -786,9 +788,12 @@ fn merge(
         .collect();
     crate::store::save_pages(tx, &changed)?;
     // Delete definitions last, once pages and templates have moved off them.
-    for group in ["templates", "components"] {
+    for (group, kind) in [
+        ("templates", DefinitionKind::Template),
+        ("components", DefinitionKind::Component),
+    ] {
         for (_, id) in deleted.iter().filter(|(g, _)| *g == group) {
-            crate::definitions::delete_definition(tx, group, id)?;
+            delete_definition(tx, kind, id)?;
         }
     }
     let pages = crate::db::load_all::<Page>(tx, "pages")?;

@@ -16,7 +16,7 @@ use subtle::ConstantTimeEq;
 use crate::{
     ApiError, AppState, Component, Content, Json, PageId, Renderer, Result, SitePath, TemplateId,
     db::{db_error, json, parse},
-    definitions::{validate_component, validate_schema_change},
+    definitions::{SchemaChange, validate_component, validate_schema_change},
     pages::content,
 };
 
@@ -174,7 +174,7 @@ async fn register_component(
                         "cannot replace a CMS-rendered component",
                     ));
                 }
-                validate_schema_change(db, None, Some(&item))?;
+                validate_schema_change(db, SchemaChange::Component(&item))?;
                 db.exec_drop(
                     "UPDATE components SET data=? WHERE id=?",
                     (json(&item)?, &id),

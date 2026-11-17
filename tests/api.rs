@@ -3517,7 +3517,12 @@ async fn deletions_travel_through_git_without_resurrection_or_lost_work() {
     .await;
     let news: Page = read(response).await;
     let error = push(&prod_db, dir, false, false).unwrap_err();
-    assert!(error.0.contains("still used by page /news"), "{error}");
+    assert!(
+        error
+            .0
+            .contains(&format!("template {article} is still used by page /news")),
+        "{error}"
+    );
     assert!(template(&prod, &article).await.is_some());
     let uri = format!("/api/admin/pages/{}", news.id);
     assert_eq!(
@@ -3528,9 +3533,19 @@ async fn deletions_travel_through_git_without_resurrection_or_lost_work() {
     assert!(template(&prod, &article).await.is_none());
 
     // Components in use by templates or pages cannot be deleted through the API either.
+    let response = call(
+        &alice.app,
+        "DELETE",
+        "/api/admin/components/cards",
+        Some(&alice.cookie),
+        None::<&Value>,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value = read(response).await;
     assert_eq!(
-        send(&alice, "DELETE", "/api/admin/components/cards", None).await,
-        StatusCode::CONFLICT
+        error["error"],
+        "component cards is still used by template Homepage"
     );
     let mut homepage = template(&alice, "homepage").await.unwrap();
     homepage.regions[0]

@@ -17,6 +17,36 @@ use crate::{
     media, richtext,
 };
 
+/// Which kind of definition a deletion targets.
+#[derive(Clone, Copy)]
+pub(crate) enum DefinitionKind {
+    Template,
+    Component,
+}
+
+impl DefinitionKind {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Template => "templates",
+            Self::Component => "components",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Template => "template",
+            Self::Component => "component",
+        }
+    }
+}
+
+/// A template or component about to replace its stored version.
+#[derive(Clone, Copy)]
+pub(crate) enum SchemaChange<'a> {
+    Template(&'a Template),
+    Component(&'a Component),
+}
+
 #[derive(Deserialize)]
 pub(crate) struct NewTemplate {
     name: String,
@@ -63,7 +93,7 @@ pub(crate) async fn update_template(
             }
             require_template(db, &item.id)?;
             validate_template(db, &item)?;
-            validate_schema_change(db, Some(&item), None)?;
+            validate_schema_change(db, SchemaChange::Template(&item))?;
             db.exec_drop("UPDATE templates SET data=? WHERE id=?", (json(&item)?, id))
                 .map_err(db_error)?;
             Ok(Json(item))
@@ -79,50 +109,51 @@ pub(crate) async fn delete_template(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            delete_definition(db, "templates", &id)?;
+            delete_definition(db, DefinitionKind::Template, &id)?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
 }
 
 /// Delete an unused template or component. Published snapshots keep their own copies.
-pub(crate) fn delete_definition(db: &mut Locked<'_>, table: &str, id: &str) -> Result<()> {
+pub(crate) fn delete_definition(db: &mut Locked<'_>, kind: DefinitionKind, id: &str) -> Result<()> {
     let pages: Vec<Page> = load_all(db, "pages")?;
     let mut users = Vec::new();
-    if table == "templates" {
-        users.extend(
+    match kind {
+        DefinitionKind::Template => users.extend(
             pages
                 .iter()
                 .filter(|p| p.template_id == id)
                 .map(|p| format!("page {}", p.slug)),
-        );
-    } else {
-        let templates: Vec<Template> = load_all(db, "templates")?;
-        users.extend(
-            templates
-                .iter()
-                .filter(|t| {
-                    t.regions
-                        .iter()
-                        .any(|r| r.allowed_components.iter().any(|c| c == id))
-                })
-                .map(|t| format!("template {}", t.name)),
-        );
-        users.extend(
-            pages
-                .iter()
-                .filter(|p| p.blocks.iter().any(|b| b.component_id == id))
-                .map(|p| format!("page {}", p.slug)),
-        );
+        ),
+        DefinitionKind::Component => {
+            let templates: Vec<Template> = load_all(db, "templates")?;
+            users.extend(
+                templates
+                    .iter()
+                    .filter(|t| {
+                        t.regions
+                            .iter()
+                            .any(|r| r.allowed_components.iter().any(|c| c == id))
+                    })
+                    .map(|t| format!("template {}", t.name)),
+            );
+            users.extend(
+                pages
+                    .iter()
+                    .filter(|p| p.blocks.iter().any(|b| b.component_id == id))
+                    .map(|p| format!("page {}", p.slug)),
+            );
+        }
     }
     if !users.is_empty() {
-        let kind = table.trim_end_matches('s');
         return Err(ApiError::conflict(format!(
-            "{kind} {id} is still used by {}",
+            "{} {id} is still used by {}",
+            kind.name(),
             users.join(", ")
         )));
     }
-    db.exec_drop(format!("DELETE FROM {table} WHERE id=?"), (id,))
+    db.exec_drop(format!("DELETE FROM {} WHERE id=?", kind.table()), (id,))
         .map_err(db_error)?;
     if db.affected_rows() == 0 {
         return Err(ApiError::not_found());
@@ -178,7 +209,7 @@ pub(crate) async fn update_component(
             }
             require_component(db, &item.id)?;
             validate_component(&item)?;
-            validate_schema_change(db, None, Some(&item))?;
+            validate_schema_change(db, SchemaChange::Component(&item))?;
             db.exec_drop(
                 "UPDATE components SET data=? WHERE id=?",
                 (json(&item)?, id),
@@ -197,7 +228,7 @@ pub(crate) async fn delete_component(
     state
         .run_as(editor, move |db, access| {
             access.admin()?;
-            delete_definition(db, "components", &id)?;
+            delete_definition(db, DefinitionKind::Component, &id)?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
@@ -205,24 +236,21 @@ pub(crate) async fn delete_component(
 
 pub(crate) fn validate_schema_change(
     db: &mut impl Queryable,
-    template: Option<&Template>,
-    component: Option<&Component>,
+    change: SchemaChange<'_>,
 ) -> Result<()> {
     let mut pages: Vec<Page> = load_all(db, "pages")?;
-    pages.retain(|page| {
-        template.is_some_and(|t| t.id == page.template_id)
-            || component.is_some_and(|c| page.blocks.iter().any(|b| b.component_id == c.id))
+    pages.retain(|page| match change {
+        SchemaChange::Template(t) => t.id == page.template_id,
+        SchemaChange::Component(c) => page.blocks.iter().any(|b| b.component_id == c.id),
     });
     let mut definitions = Definitions::load(db, &pages)?;
-    if let Some(template) = template {
-        definitions
-            .templates
-            .insert(template.id.clone(), template.clone());
-    }
-    if let Some(component) = component {
-        definitions
-            .components
-            .insert(component.id.clone(), component.clone());
+    match change {
+        SchemaChange::Template(t) => {
+            definitions.templates.insert(t.id.clone(), t.clone());
+        }
+        SchemaChange::Component(c) => {
+            definitions.components.insert(c.id.clone(), c.clone());
+        }
     }
     definitions.load_media(db, &pages)?;
     for page in &pages {
