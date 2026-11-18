@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="775" viewBox="0 0 1200 775" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect width="1200" height="775" fill="#ffffff"/>
+<text x="30" y="40" font-size="20" font-weight="700" fill="#1f2328" text-anchor="start">What Baddiecore does, grouped by area</text>
+<text x="30" y="64" font-size="13" font-weight="normal" fill="#59636e" text-anchor="start">Each card names the doc that covers the area in detail.</text>
+<rect x="30" y="90" width="270" height="300" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 30 100 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#0969da"/>
+<text x="44" y="118" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Authoring</text>
+<text x="44" y="374" font-size="12" font-weight="600" fill="#0969da" text-anchor="start">docs/editing.md</text>
+<circle cx="48" cy="158" r="2.5" fill="#0969da"/>
+<text x="60" y="162" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Experience editor, live preview</text>
+<circle cx="48" cy="188" r="2.5" fill="#0969da"/>
+<text x="60" y="192" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Templates: regions and limits</text>
+<circle cx="48" cy="218" r="2.5" fill="#0969da"/>
+<text x="60" y="222" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Fields: text, URL, rich text, media</text>
+<circle cx="48" cy="248" r="2.5" fill="#0969da"/>
+<text x="60" y="252" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Renderers: hero, text, callout, cards</text>
+<circle cx="48" cy="278" r="2.5" fill="#0969da"/>
+<text x="60" y="282" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">External components for your app</text>
+<circle cx="48" cy="308" r="2.5" fill="#0969da"/>
+<text x="60" y="312" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Rich text (Tiptap), site icons</text>
+<circle cx="48" cy="338" r="2.5" fill="#0969da"/>
+<text x="60" y="342" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Page tree, path moves, search</text>
+<rect x="320" y="90" width="270" height="300" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 320 100 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#1a7f37"/>
+<text x="334" y="118" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Publishing</text>
+<text x="334" y="374" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start">docs/editing.md</text>
+<circle cx="338" cy="158" r="2.5" fill="#1a7f37"/>
+<text x="350" y="162" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Drafts with revisions</text>
+<circle cx="338" cy="188" r="2.5" fill="#1a7f37"/>
+<text x="350" y="192" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Save conflicts, no overwrites</text>
+<circle cx="338" cy="218" r="2.5" fill="#1a7f37"/>
+<text x="350" y="222" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Submit, approve, request changes</text>
+<circle cx="338" cy="248" r="2.5" fill="#1a7f37"/>
+<text x="350" y="252" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Admins publish directly</text>
+<circle cx="338" cy="278" r="2.5" fill="#1a7f37"/>
+<text x="350" y="282" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Scheduled publishing</text>
+<circle cx="338" cy="308" r="2.5" fill="#1a7f37"/>
+<text x="350" y="312" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Unpublish a page or one block</text>
+<circle cx="338" cy="338" r="2.5" fill="#1a7f37"/>
+<text x="350" y="342" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Snapshots freeze page and schema</text>
+<rect x="610" y="90" width="270" height="300" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 610 100 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#8250df"/>
+<text x="624" y="118" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">People and access</text>
+<text x="624" y="374" font-size="12" font-weight="600" fill="#8250df" text-anchor="start">docs/authentication.md</text>
+<circle cx="628" cy="158" r="2.5" fill="#8250df"/>
+<text x="640" y="162" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Local accounts, Argon2id hashes</text>
+<circle cx="628" cy="188" r="2.5" fill="#8250df"/>
+<text x="640" y="192" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Sessions in MySQL, 12 hours</text>
+<circle cx="628" cy="218" r="2.5" fill="#8250df"/>
+<text x="640" y="222" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Roles: admin, reviewer, editor</text>
+<circle cx="628" cy="248" r="2.5" fill="#8250df"/>
+<text x="640" y="252" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Path grants for members, groups</text>
+<circle cx="628" cy="278" r="2.5" fill="#8250df"/>
+<text x="640" y="282" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Lockout after 5 failed sign-ins</text>
+<circle cx="628" cy="308" r="2.5" fill="#8250df"/>
+<text x="640" y="312" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">reset-admin from the CLI</text>
+<circle cx="628" cy="338" r="2.5" fill="#8250df"/>
+<text x="640" y="342" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Custom AuthProvider in Rust</text>
+<rect x="900" y="90" width="270" height="300" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 900 100 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#bf3989"/>
+<text x="914" y="118" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Media</text>
+<text x="914" y="374" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start">docs/editing.md#media</text>
+<circle cx="918" cy="158" r="2.5" fill="#bf3989"/>
+<text x="930" y="162" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">PNG, JPEG, GIF, WebP, AVIF</text>
+<circle cx="918" cy="188" r="2.5" fill="#bf3989"/>
+<text x="930" y="192" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Up to 10 MB, checked by content</text>
+<circle cx="918" cy="218" r="2.5" fill="#bf3989"/>
+<text x="930" y="222" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Alt text per image</text>
+<circle cx="918" cy="248" r="2.5" fill="#bf3989"/>
+<text x="930" y="252" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Picker in media fields</text>
+<circle cx="918" cy="278" r="2.5" fill="#bf3989"/>
+<text x="930" y="282" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Delete blocked while in use</text>
+<circle cx="918" cy="308" r="2.5" fill="#bf3989"/>
+<text x="930" y="312" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Served at /media/{id}</text>
+<rect x="30" y="410" width="270" height="275" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 30 420 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#0969da"/>
+<text x="44" y="438" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Delivery</text>
+<text x="44" y="669" font-size="12" font-weight="600" fill="#0969da" text-anchor="start">docs/headless.md</text>
+<circle cx="48" cy="478" r="2.5" fill="#0969da"/>
+<text x="60" y="482" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Built-in public site</text>
+<circle cx="48" cy="508" r="2.5" fill="#0969da"/>
+<text x="60" y="512" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Route aliases as 301 redirects</text>
+<circle cx="48" cy="538" r="2.5" fill="#0969da"/>
+<text x="60" y="542" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Headless: list pages, get content</text>
+<circle cx="48" cy="568" r="2.5" fill="#0969da"/>
+<text x="60" y="572" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Register components by API</text>
+<circle cx="48" cy="598" r="2.5" fill="#0969da"/>
+<text x="60" y="602" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Separate content and schema keys</text>
+<rect x="320" y="410" width="270" height="275" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 320 420 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#1a7f37"/>
+<text x="334" y="438" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Moving content</text>
+<text x="334" y="669" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start">docs/content-cli.md</text>
+<circle cx="338" cy="478" r="2.5" fill="#1a7f37"/>
+<text x="350" y="482" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Definitions in Git as YAML</text>
+<circle cx="338" cy="508" r="2.5" fill="#1a7f37"/>
+<text x="350" y="512" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">status, pull, push, --dry-run</text>
+<circle cx="338" cy="538" r="2.5" fill="#1a7f37"/>
+<text x="350" y="542" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Conflicts stop the sync</text>
+<circle cx="338" cy="568" r="2.5" fill="#1a7f37"/>
+<text x="350" y="572" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Pages move as zip packages</text>
+<circle cx="338" cy="598" r="2.5" fill="#1a7f37"/>
+<text x="350" y="602" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Import checks before installing</text>
+<rect x="610" y="410" width="270" height="275" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 610 420 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#8250df"/>
+<text x="624" y="438" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Operations</text>
+<text x="624" y="669" font-size="12" font-weight="600" fill="#8250df" text-anchor="start">docs/deployment.md</text>
+<circle cx="628" cy="478" r="2.5" fill="#8250df"/>
+<text x="640" y="482" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Docker Compose or OrbStack</text>
+<circle cx="628" cy="508" r="2.5" fill="#8250df"/>
+<text x="640" y="512" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Railway config included</text>
+<circle cx="628" cy="538" r="2.5" fill="#8250df"/>
+<text x="640" y="542" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Ordered schema migrations</text>
+<circle cx="628" cy="568" r="2.5" fill="#8250df"/>
+<text x="640" y="572" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">/health checks the database</text>
+<circle cx="628" cy="598" r="2.5" fill="#8250df"/>
+<text x="640" y="602" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Writes serialized by cms_lock</text>
+<circle cx="628" cy="628" r="2.5" fill="#8250df"/>
+<text x="640" y="632" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">503 when job queues fill</text>
+<rect x="900" y="410" width="270" height="275" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<path d="M 900 420 a 10 10 0 0 1 10 -10 h 250 a 10 10 0 0 1 10 10 v 34 h -270 z" fill="#bf3989"/>
+<text x="914" y="438" font-size="15" font-weight="700" fill="#ffffff" text-anchor="start">Extending in source</text>
+<text x="914" y="669" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start">docs/development.md</text>
+<circle cx="918" cy="478" r="2.5" fill="#bf3989"/>
+<text x="930" y="482" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Add a renderer</text>
+<circle cx="918" cy="508" r="2.5" fill="#bf3989"/>
+<text x="930" y="512" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Append a migration</text>
+<circle cx="918" cy="538" r="2.5" fill="#bf3989"/>
+<text x="930" y="542" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Add rich-text nodes or marks</text>
+<circle cx="918" cy="568" r="2.5" fill="#bf3989"/>
+<text x="930" y="572" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">Plug in an AuthProvider</text>
+<circle cx="918" cy="598" r="2.5" fill="#bf3989"/>
+<text x="930" y="602" font-size="13" font-weight="normal" fill="#1f2328" text-anchor="start">No runtime plugins: fork and edit</text>
+<rect x="30" y="705" width="1140" height="50" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="46" y="727" font-size="13" font-weight="700" fill="#1f2328" text-anchor="start">Not in this version</text>
+<text x="46" y="745" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Image resizing, video and SVG uploads, localization, revision history UI, review audit history, runtime plugins, server-side rendering for SEO</text>
+</svg>

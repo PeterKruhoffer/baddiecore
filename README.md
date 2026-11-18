@@ -36,6 +36,7 @@ MySQL stores content in the `mysql_data` volume. **`docker compose down -v` dele
 
 ## Documentation
 
+- [How Baddiecore fits together](docs/overview.md) has an architecture diagram and a feature map. Start here.
 - [Deployment and operations](docs/deployment.md) covers containers, Railway, server configuration, backups, and limits.
 - [Authentication](docs/authentication.md) covers local accounts, administrator recovery, and custom providers.
 - [Editing and publishing](docs/editing.md) covers pages, templates, route aliases, permissions, reviews, and moving pages between installations as zip packages.

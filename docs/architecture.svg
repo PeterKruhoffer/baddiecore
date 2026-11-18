@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="852" viewBox="0 0 1200 852" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect width="1200" height="852" fill="#ffffff"/>
+<text x="30" y="40" font-size="20" font-weight="700" fill="#1f2328" text-anchor="start">One Rust binary sits between every client and one MySQL database</text>
+<text x="30" y="64" font-size="13" font-weight="normal" fill="#59636e" text-anchor="start">Requests enter through four doors. Every write goes through the domain core in one locked transaction.</text>
+<text x="30" y="96" font-size="11" font-weight="700" fill="#59636e" text-anchor="start">WHO USES IT</text>
+<text x="292" y="96" font-size="11" font-weight="700" fill="#59636e" text-anchor="start">BADDIECORE BINARY (RUST + AXUM)</text>
+<text x="912" y="96" font-size="11" font-weight="700" fill="#59636e" text-anchor="start">MYSQL 8.4</text>
+<rect x="30" y="120" width="220" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="42" y="142" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Visitors</text>
+<text x="42" y="162" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Public site in the browser</text>
+<text x="42" y="180" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">(Solid SPA)</text>
+<rect x="30" y="210" width="220" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="42" y="232" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Your app</text>
+<text x="42" y="252" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Server-side, Bearer API key</text>
+<rect x="30" y="330" width="220" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="42" y="352" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Editors and admins</text>
+<text x="42" y="372" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Editor SPA at /admin,</text>
+<text x="42" y="390" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">session cookie</text>
+<rect x="30" y="430" width="220" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="42" y="452" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Operator or pipeline</text>
+<text x="42" y="472" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">baddiecore status, pull, push</text>
+<rect x="30" y="560" width="220" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="42" y="582" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Git repository</text>
+<text x="42" y="602" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">baddiecore-content/*.yaml</text>
+<rect x="280" y="104" width="590" height="580" rx="12" fill="none" stroke="#afb8c1"/>
+<rect x="300" y="120" width="250" height="64" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+<text x="312" y="142" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Public routes</text>
+<text x="312" y="162" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">/api/content, /media/{id},</text>
+<text x="312" y="180" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">301 route aliases</text>
+<rect x="300" y="210" width="250" height="64" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+<text x="312" y="232" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Headless API</text>
+<text x="312" y="252" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">/api/headless/pages, content,</text>
+<text x="312" y="270" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">components/{id}</text>
+<rect x="300" y="330" width="250" height="64" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+<text x="312" y="352" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Admin API</text>
+<text x="312" y="372" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">/api/admin/*, /api/login</text>
+<text x="312" y="390" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">roles and path grants</text>
+<rect x="300" y="430" width="250" height="64" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+<text x="312" y="452" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">CLI commands</text>
+<text x="312" y="472" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Same binary, DATABASE_URL,</text>
+<text x="312" y="490" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">no HTTP, no editor login</text>
+<rect x="300" y="530" width="250" height="64" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+<text x="312" y="552" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Scheduled publisher</text>
+<text x="312" y="572" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Background task, every 15 s</text>
+<rect x="600" y="310" width="250" height="300" rx="8" fill="#fff8c5" stroke="#d4a72c"/>
+<text x="612" y="332" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Domain core</text>
+<text x="612" y="352" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">definitions: validate drafts</text>
+<text x="612" y="370" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">  against templates and components</text>
+<text x="612" y="388" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">store: the only writer of pages</text>
+<text x="612" y="406" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">workflow: review and publish</text>
+<text x="612" y="424" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">schedule, media, package</text>
+<text x="612" y="442" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">richtext: Tiptap JSON rules</text>
+<text x="612" y="460" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">serialization: YAML for Git</text>
+<text x="612" y="478" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">  and zip packages</text>
+<text x="612" y="572" font-size="11" font-weight="600" fill="#7d4e00" text-anchor="start">Each write runs in one transaction</text>
+<text x="612" y="588" font-size="11" font-weight="600" fill="#7d4e00" text-anchor="start">holding the cms_lock row</text>
+<rect x="300" y="632" width="550" height="40" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="312" y="654" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Also serves web/dist: the Solid app for /admin and public pages</text>
+<rect x="900" y="104" width="270" height="580" rx="12" fill="none" stroke="#afb8c1"/>
+<rect x="915" y="120" width="240" height="78" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+<text x="927" y="142" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Published</text>
+<text x="927" y="162" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">snapshots, route_aliases</text>
+<rect x="915" y="210" width="240" height="78" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="927" y="232" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Drafts and workflow</text>
+<text x="927" y="252" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">pages, page_paths, reviews,</text>
+<text x="927" y="270" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">scheduled_publications</text>
+<rect x="915" y="300" width="240" height="78" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="927" y="322" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Definitions</text>
+<text x="927" y="342" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">components, templates</text>
+<rect x="915" y="390" width="240" height="78" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="927" y="412" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">People</text>
+<text x="927" y="432" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">organization, accounts, sessions</text>
+<rect x="915" y="480" width="240" height="78" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="927" y="502" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Media</text>
+<text x="927" y="522" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">media (metadata and bytes)</text>
+<rect x="915" y="570" width="240" height="78" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="927" y="592" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">Bookkeeping</text>
+<text x="927" y="612" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">sync_base, cms_lock,</text>
+<text x="927" y="630" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">schema_migrations</text>
+<line x1="250" y1="152" x2="298" y2="152" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="250" y1="242" x2="298" y2="242" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="250" y1="362" x2="298" y2="362" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="250" y1="462" x2="298" y2="462" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="140" y1="558" x2="140" y2="496" stroke="#8c959f" stroke-width="1.6" marker-start="url(#head)" marker-end="url(#head)"/>
+<text x="150" y="532" font-size="11" font-weight="normal" fill="#59636e" text-anchor="start">pull / push</text>
+<line x1="550" y1="140" x2="913" y2="140" stroke="#8c959f" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#head)"/>
+<text x="570" y="132" font-size="11" font-weight="normal" fill="#59636e" text-anchor="start">reads published snapshots, no CMS lock</text>
+<line x1="550" y1="230" x2="913" y2="175" stroke="#8c959f" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#head)"/>
+<line x1="470" y1="274" x2="640" y2="308" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<text x="560" y="286" font-size="11" font-weight="normal" fill="#59636e" text-anchor="start">registers components</text>
+<line x1="550" y1="362" x2="598" y2="362" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="550" y1="462" x2="598" y2="462" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="550" y1="562" x2="598" y2="562" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="850" y1="455" x2="913" y2="455" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<text x="856" y="446" font-size="11" font-weight="normal" fill="#59636e" text-anchor="start">writes</text>
+<text x="30" y="728" font-size="11" font-weight="700" fill="#59636e" text-anchor="start">HOW A PAGE GOES LIVE</text>
+<rect x="30" y="760" width="172" height="72" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="42" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">1. Define</text>
+<text x="42" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Admin sets templates</text>
+<text x="42" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">and components</text>
+<rect x="222" y="760" width="172" height="72" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="234" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">2. Draft</text>
+<text x="234" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Editor saves blocks,</text>
+<text x="234" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">revision goes up</text>
+<line x1="202" y1="796" x2="220" y2="796" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<rect x="414" y="760" width="172" height="72" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="426" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">3. Review</text>
+<text x="426" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Editor submits,</text>
+<text x="426" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">reviewer approves</text>
+<line x1="394" y1="796" x2="412" y2="796" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<rect x="606" y="760" width="172" height="72" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+<text x="618" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">4. Publish</text>
+<text x="618" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Now, or at a</text>
+<text x="618" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">scheduled time</text>
+<line x1="586" y1="796" x2="604" y2="796" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<rect x="798" y="760" width="172" height="72" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+<text x="810" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">5. Snapshot</text>
+<text x="810" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Page and its schema</text>
+<text x="810" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">frozen together</text>
+<line x1="778" y1="796" x2="796" y2="796" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<rect x="990" y="760" width="172" height="72" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+<text x="1002" y="782" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">6. Serve</text>
+<text x="1002" y="802" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">Public site and</text>
+<text x="1002" y="820" font-size="12" font-weight="normal" fill="#59636e" text-anchor="start">headless API read it</text>
+<line x1="970" y1="796" x2="988" y2="796" stroke="#8c959f" stroke-width="1.6" marker-end="url(#head)"/>
+<path d="M 316 758 C 380 738, 560 738, 624 758" fill="none" stroke="#8c959f" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#head)"/>
+<text x="470" y="742" font-size="11" font-weight="normal" fill="#59636e" text-anchor="middle">admins can publish directly</text>
+</svg>
